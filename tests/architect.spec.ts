@@ -831,7 +831,7 @@ test.describe('architect teams', () => {
     const tools = panel(page).locator('.architect-worker-detail .tool-activity');
     await expect(tools).toHaveCount(1);
     await expect(tools).toHaveAttribute('data-tool-status', 'completed');
-    await tools.locator('summary').click();
+    await tools.locator(':scope > summary').click();
     await expect(tools).toContainText('Saved file contents.');
     await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'worker-build', kind: 'tool', text: '', tool: { id: 'read-file', name: 'Read', status: 'completed', input: 'src/search.ts', output: 'Saved file contents.' } }));
     await nextPaint(page); await expect(tools).toHaveCount(1);

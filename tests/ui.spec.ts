@@ -56,7 +56,8 @@ async function disableWallpapers(page: Page): Promise<void> {
 }
 const newTaskHeading = (page: Page) => page.getByRole('heading', { name: /^What should we build in/ });
 const taskProjectPicker = (page: Page) => page.getByRole('dialog', { name: 'Choose project', exact: true });
-const toolByName = (page: Page, name: string) => page.locator('details.tool-activity').filter({ has: page.locator('summary').filter({ hasText: name }) });
+const toolByName = (page: Page, name: string) => page.locator(`details.tool-activity[data-tool-name="${name}"]`)
+  .or(page.locator('details.tool-activity:not([data-tool-name])').filter({ has: page.locator('summary').filter({ hasText: name }) }));
 const turnForTool = (tool: Locator) => tool.locator('xpath=ancestor::details[contains(concat(" ", normalize-space(@class), " "), " turn-activity ")][1]');
 async function expandToolTurn(tool: Locator): Promise<void> {
   const turn = turnForTool(tool);
@@ -1627,12 +1628,12 @@ test('coalesces appearance preferences without restoring stale glass or losing t
 test('expands saved tool commands and file contents after reloading the conversation', async ({ page }) => {
   const read = toolByName(page, 'Read');
   await expandToolTurn(read);
-  await read.locator('summary').click();
+  await read.locator(':scope > summary').click();
   await expect(read.locator('[data-tool-section="input"] pre')).toHaveText('src/components/search.ts');
   await expect(read.locator('[data-tool-section="output"] pre')).toContainText('export function createSearchIndex(items)');
   const bash = toolByName(page, 'Bash');
   await expandToolTurn(bash);
-  await bash.locator('summary').click();
+  await bash.locator(':scope > summary').click();
   await expect(bash.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
   await expect(bash.locator('[data-tool-section="output"] pre')).toContainText('PASS src/components/search.test.ts');
   await expect(bash.locator('[data-tool-section="output"] pre')).toContainText('Tests: 12 passed, 12 total');
@@ -1641,7 +1642,7 @@ test('expands saved tool commands and file contents after reloading the conversa
   await page.screenshot({ path: '/private/tmp/pandacode-tool-details.png' });
   await page.reload();
   await expandToolTurn(bash);
-  await bash.locator('summary').click();
+  await bash.locator(':scope > summary').click();
   await expect(bash.locator('[data-tool-section="output"] pre')).toContainText('Sample output — no command was executed.');
   await expect(page.getByText('Browser preview · sample data', { exact: true })).toBeVisible();
 });
@@ -1670,7 +1671,7 @@ test('coalesces live tool updates while preserving expansion and saves their det
   await expect(live).toHaveAttribute('data-tool-status', 'running');
   await expect(turnForTool(live)).toHaveAttribute('open', '');
   await expandToolTurn(live);
-  await live.locator('summary').click();
+  await live.locator(':scope > summary').click();
   await expect(live.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
   await page.clock.runFor(450);
   await expect(live).toHaveCount(1);
@@ -1690,7 +1691,7 @@ test('coalesces live tool updates while preserving expansion and saves their det
   await page.locator(`.task-item[data-id="${sessionId}"]`).click();
   await expect(saved).toHaveCount(1);
   await expandToolTurn(saved);
-  if (!await saved.evaluate(element => element.hasAttribute('open'))) await saved.locator('summary').click();
+  if (!await saved.evaluate(element => element.hasAttribute('open'))) await saved.locator(':scope > summary').click();
   await expect(saved.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
   await expect(saved.locator('[data-tool-section="output"] pre')).toContainText('Tests: 12 passed, 12 total');
   const persisted = await page.evaluate(async sessionId => {
@@ -1732,7 +1733,8 @@ test('preserves focused tool detail and output scroll across snapshots and savin
   await expandToolTurn(live);
   const turnKey = await turnForTool(live).getAttribute('data-turn-key');
   const key = await live.getAttribute('data-tool-key');
-  await live.locator('summary').click();
+  await live.locator(':scope > summary').click();
+  await live.locator('.tool-trace-raw > summary').click();
   const retainedTool = page.locator(`#transcript [data-tool-key="${key}"]`);
   const output = retainedTool.locator('[data-tool-section="output"] pre');
   await output.focus();
@@ -1801,7 +1803,8 @@ test('caps long live tool activity without dropping the output being read', asyn
   const firstTool = page.locator('.live-tools details.tool-activity').first();
   const key = await firstTool.getAttribute('data-tool-key');
   await expandToolTurn(firstTool);
-  await firstTool.locator('summary').click();
+  await firstTool.locator(':scope > summary').click();
+  await firstTool.locator('.tool-trace-raw > summary').click();
   const output = page.locator(`[data-tool-key="${key}"] [data-tool-section="output"] pre`);
   await expect(output).toHaveText('Keep this first tool output available while I read it.');
   await output.focus();
@@ -1840,7 +1843,7 @@ test('caps long live tool activity without dropping the output being read', asyn
 test('keeps legacy tool output readable without duplicate completion placeholders', async ({ page }) => {
   const legacy = toolByName(page, 'Legacy tool report');
   await expandToolTurn(legacy);
-  await legacy.locator('summary').click();
+  await legacy.locator(':scope > summary').click();
   await expect(legacy.locator('.tool-activity-legacy-body')).toHaveText('Older saved output remains readable.');
   await expect(toolByName(page, 'Tool finished')).toHaveCount(0);
 });
@@ -1877,8 +1880,8 @@ test('collapses turn activity into one compact row while keeping the final answe
   await expect(turn).toHaveAttribute('open', '');
   await expect(commentary).toBeVisible();
   await expandToolTurn(toolByName(page, 'Read'));
-  await expect(toolByName(page, 'Read').locator('summary')).toBeVisible();
-  await expect(toolByName(page, 'Bash').locator('summary')).toBeVisible();
+  await expect(toolByName(page, 'Read').locator(':scope > summary')).toBeVisible();
+  await expect(toolByName(page, 'Bash').locator(':scope > summary')).toBeVisible();
   await page.screenshot({ path: '/private/tmp/pandacode-activity-expanded.png', animations: 'disabled' });
   await summary.focus();
   await page.keyboard.press('Space');

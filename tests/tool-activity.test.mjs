@@ -27,7 +27,11 @@ test('renders the command and recorded output with a stable disclosure key', () 
   const html = renderToolActivity(stored(activity), 'message-5');
   assert.match(html, /data-tool-key="message-5"/);
   assert.match(html, /data-tool-status="completed"/);
-  assert.match(html, /tool-activity-hint">npm run test</);
+  assert.match(html, /tool-trace-verb">Ran<\/span><span class="tool-trace-chip" title="npm run test">/);
+  assert.match(html, /tool-trace-object is-mono">run test</);
+  assert.match(html, /data-tool-kind="shell" data-tool-name="Bash"/);
+  assert.match(html, /class="tool-trace-card"/);
+  assert.match(html, /<details class="tool-trace-raw">/);
   assert.match(html, /data-tool-section="input"/);
   assert.match(html, /data-tool-section="output"/);
   assert.match(html, /12 tests passed\nFinished in 0.4s/);
@@ -77,11 +81,12 @@ test('group summaries count calls, expose running/failure states and escape tool
     { key: 'x" onclick="bad', content: { ...activity, status: 'running' } },
     { key: 'read', content: stored({ ...activity, id: 'read', name: 'Read', status: 'failed' }) },
   ]);
-  assert.match(html, /tool-group-label">2 tools</);
-  assert.match(html, /Commands, Files/);
-  assert.match(html, /1 running · 1 failed/);
+  assert.match(html, /tool-group-label">Running 1 command and reading 1 file…</);
+  assert.match(html, /tool-group-status has-failure"> · 1 failed</);
+  assert.match(html, /tool-trace-stack/);
   assert.ok(!html.includes('data-tool-group-key="group:x" onclick='));
-  assert.equal(html.match(/class="tool-activity"/g)?.length, 2);
-  assert.match(renderToolGroup([{ key: 'legacy', content: 'Read README.md' }]), /tool-group-label">1 tool</);
+  assert.equal(html.match(/class="tool-activity tool-trace"/g)?.length, 2);
+  assert.match(renderToolGroup([{ key: 'legacy', content: 'Read README.md' }]), /tool-group-label">Used 1 tool</);
+  assert.match(renderToolGroup([{ key: 'a', content: activity }, { key: 'b', content: activity }]), /tool-group-label">Ran 2 commands</);
   assert.equal(renderToolGroup([]), '');
 });

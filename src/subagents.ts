@@ -263,6 +263,8 @@ export class Subagents {
           const template = document.createElement('template'); template.innerHTML = html;
           const next = template.content.firstElementChild as HTMLDetailsElement;
           next.dataset.snapshot = JSON.stringify(tool); next.open = old?.open ?? false;
+          const raw = next.querySelector<HTMLDetailsElement>('.tool-trace-raw');
+          if (raw) raw.open = Boolean(old?.querySelector<HTMLDetailsElement>('.tool-trace-raw')?.open);
           const focusedIndex = old ? [...old.querySelectorAll('summary, pre')].findIndex(control => control === document.activeElement) : -1;
           const positions = old ? [...old.querySelectorAll('pre')].map(pre => ({ top: pre.scrollTop, left: pre.scrollLeft })) : [];
           if (old) old.replaceWith(next); else target.append(next);

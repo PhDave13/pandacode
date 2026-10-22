@@ -25,6 +25,7 @@ let sessions: Session[] = [
   { id: 'session-3', projectId: 'project-1', title: 'Add keyboard shortcuts', provider: 'kimi', model: '', mode: 'ask', status: 'idle', createdAt: now - 86400000, updatedAt: now - 86400000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
   { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
 ];
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pandacode.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -67,7 +68,32 @@ loadThreadOrder();
 sessions[2].issue = { kind: 'issue', number: 131, url: 'https://github.com/orbit-labs/orbit/issues/131', title: 'Keyboard shortcut cheat sheet', state: 'open', checkedAt: now };
 let id = 10;
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
-const messages: Record<string, Message[]> = { 'session-1': [
+const traceRoot = '/Users/you/Projects/orbit';
+const traceIndex = `${traceRoot}/src/lib/search-index.ts`;
+const traceJson = (value: unknown) => JSON.stringify(value, null, 2);
+const traceTools: Omit<ToolActivity, 'id'>[] = [
+  { name: 'Bash', status: 'completed', input: traceJson({ command: 'rg -n createSearchIndex src', description: 'Find index usage' }), output: 'src/components/search.ts:3:import { createSearchIndex } from "../lib/search-index";\nsrc/components/search.ts:11:const index = createSearchIndex(items);\nsrc/lib/search-index.ts:5:export function createSearchIndex(items: Item[]) {\nSample output — no command was executed.' },
+  { name: 'Read', status: 'completed', input: traceJson({ file_path: traceIndex }), output: 'import type { Item } from "./types";\n\nexport interface SearchIndex {\n  search(query: string): Item[];\n}\n\nexport function createSearchIndex(items: Item[]): SearchIndex {\n  return {\n    search(query) {\n      return items.filter(item =>\n        item.title.toLowerCase().includes(query.toLowerCase())\n      );\n    }\n  };\n}' },
+  { name: 'Grep', status: 'completed', input: traceJson({ pattern: 'toLowerCase', path: 'src' }), output: 'src/components/search.ts\nsrc/lib/search-index.ts\nsrc/lib/sort.ts\nsrc/components/filter.ts' },
+  { name: 'Glob', status: 'completed', input: traceJson({ pattern: 'src/**/*.test.ts' }), output: 'src/components/search.test.ts\nsrc/lib/search-index.test.ts' },
+  { name: 'Edit', status: 'completed', input: traceJson({ file_path: traceIndex, old_string: '    search(query) {\n      return items.filter(item =>\n        item.title.toLowerCase().includes(query.toLowerCase())', new_string: '    search(query) {\n      const needle = normalize(query);\n      return items.filter(item =>\n        normalize(item.title).includes(needle)' }), output: `The file ${traceIndex} has been updated successfully.` },
+  { name: 'Write', status: 'completed', input: traceJson({ file_path: `${traceRoot}/src/lib/normalize.ts`, content: '// Case- and accent-insensitive comparison key.\nexport function normalize(text: string): string {\n  return text\n    .normalize("NFKD")\n    .replace(/\\p{M}/gu, "")\n    .toLowerCase();\n}\n' }), output: `File created successfully at: ${traceRoot}/src/lib/normalize.ts` },
+  { name: 'WebSearch', status: 'completed', input: traceJson({ query: 'unicode case folding javascript' }), output: 'Web search results for query: "unicode case folding javascript"\n\nLinks: ' + JSON.stringify([{ title: 'String.prototype.toLowerCase() - JavaScript | MDN', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/toLowerCase' }, { title: 'Unicode Case Folding', url: 'https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt' }, { title: 'Case folding in JavaScript — Stack Overflow', url: 'https://stackoverflow.com/questions/1695233/case-folding-javascript' }, { title: 'String.prototype.normalize() - MDN', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize' }]) },
+  { name: 'WebFetch', status: 'completed', input: traceJson({ url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/localeCompare', prompt: 'Does localeCompare support case-insensitive comparison?' }), output: 'Yes. Pass `{ sensitivity: "base" }` (or "accent") as the options argument and localeCompare ignores case differences.' },
+  { name: 'TodoWrite', status: 'completed', input: traceJson({ todos: [{ content: 'Normalize queries and titles', status: 'completed', activeForm: 'Normalizing queries and titles' }, { content: 'Run the test suite', status: 'in_progress', activeForm: 'Running the test suite' }, { content: 'Update the README usage notes', status: 'pending', activeForm: 'Updating the README' }] }), output: 'Todos have been modified successfully.' },
+  { name: 'Command', status: 'completed', input: `/bin/zsh -lc "npm test"\nWorking directory: ${traceRoot}`, output: `Exit code: 0\n${sampleTestOutput}` },
+  { name: 'Bash', status: 'failed', input: traceJson({ command: 'npm run lint -- src/lib', description: 'Lint the library folder' }), output: 'src/lib/normalize.ts\n  3:10  error  Unicode property escapes need the "u" flag  regexp/require-unicode-regexp\n\n1 error found\nnpm ERR! Lifecycle script `lint` failed with exit code 1\nExit code: 1\nSample output — no command was executed.' },
+  { name: 'mcp__github__list_pull_requests', status: 'completed', input: traceJson({ owner: 'orbit-labs', repo: 'orbit', state: 'open' }), output: traceJson([{ number: 142, title: 'Faster search index', state: 'open' }, { number: 139, title: 'Keyboard cheat sheet', state: 'open' }]) },
+];
+const traceMessages: Message[] = [
+  { id: 101, sessionId: 'session-5', role: 'user', content: 'Make search ignore case and accents, then check the tests.', createdAt: now - 604800000 },
+  { id: 102, sessionId: 'session-5', role: 'assistant', content: 'I’ll find where the index is used, normalize both sides of the comparison, and run the tests.', createdAt: now - 604790000 },
+  ...traceTools.map((tool, i): Message => ({ id: 110 + i, sessionId: 'session-5', role: 'tool', content: encodeTool({ id: `trace-tool-${i}`, ...tool }), createdAt: now - 604780000 + i * 1000 })),
+  { id: 130, sessionId: 'session-5', role: 'assistant', content: 'Search now compares a normalized form of the query and each title, so case and accents no longer matter.\n\n- Added `normalize()` in `src/lib/normalize.ts`.\n- The tests pass; lint flags the new regex and needs the `u` flag follow-up.', createdAt: now - 604000000 },
+];
+// Trace showcase thread: opt in with ?trace so default session counts stay unchanged.
+const showTrace = typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace');
+const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': traceMessages } : {}), 'session-1': [
   { id: 1, sessionId: 'session-1', role: 'user', content: 'Search feels a little slow. Can you make it respond instantly as I type, and keep the keyboard navigation working?', createdAt: now - 420000 },
   { id: 2, sessionId: 'session-1', role: 'assistant', content: 'I’ll trace how the search input updates the results, then check the keyboard interactions.', createdAt: now - 410000 },
   { id: 3, sessionId: 'session-1', role: 'tool', content: encodeTool({ id: 'sample-read', name: 'Read', status: 'completed', input: 'src/components/search.ts', output: sampleSource }), createdAt: now - 400000 },

@@ -11,6 +11,7 @@ import './sidebar-tree.css';
 import './message-queue.css';
 import './usage-limit.css';
 import './document-viewer.css';
+import './tool-trace.css';
 import { renderDocument, setDocumentView } from './document-viewer';
 import { canSteer, moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
@@ -1121,17 +1122,17 @@ function userContent(content: string): string {
   if (!blocks.length) return escape(content.slice(0, index));
   return `${escape(content.slice(0, index))}<details class="message-context"><summary>${icon('attach')}Attached context<span>${blocks.length}</span></summary><pre>${escape(blocks.join('\n\n'))}</pre></details>`;
 }
-type ToolView = { open: boolean; controls: { selector: string; top: number; left: number; focused: boolean }[] };
+type ToolView = { open: boolean; rawOpen: boolean; controls: { selector: string; top: number; left: number; focused: boolean }[] };
 function captureTools(root: ParentNode): Map<string, ToolView> {
   const views = new Map<string, ToolView>();
-  const selectors = ['summary', '[data-tool-section="input"] pre', '[data-tool-section="output"] pre', '.tool-activity-legacy-body'];
+  const selectors = ['summary', '.tool-trace-raw > summary', '.tool-trace-card pre', '[data-tool-section="input"] pre', '[data-tool-section="output"] pre', '.tool-activity-legacy-body'];
   root.querySelectorAll<HTMLDetailsElement>('details[data-tool-key]').forEach(tool => {
     const controls: ToolView['controls'] = [];
     for (const selector of selectors) {
       const control = tool.querySelector<HTMLElement>(selector);
       if (control) controls.push({ selector, top: control.scrollTop, left: control.scrollLeft, focused: control === document.activeElement });
     }
-    views.set(tool.dataset.toolKey!, { open: tool.open, controls });
+    views.set(tool.dataset.toolKey!, { open: tool.open, rawOpen: Boolean(tool.querySelector<HTMLDetailsElement>('.tool-trace-raw')?.open), controls });
   });
   return views;
 }
@@ -1139,6 +1140,8 @@ function restoreTools(root: ParentNode, views: Map<string, ToolView>): void {
   root.querySelectorAll<HTMLDetailsElement>('details[data-tool-key]').forEach(tool => {
     const view = views.get(tool.dataset.toolKey!); if (!view) return;
     tool.open = view.open;
+    const raw = tool.querySelector<HTMLDetailsElement>('.tool-trace-raw');
+    if (raw) raw.open = view.rawOpen;
     for (const saved of view.controls) {
       const control = tool.querySelector<HTMLElement>(saved.selector);
       if (saved.focused) (control ?? tool.querySelector<HTMLElement>('summary'))?.focus({ preventScroll: true });
