@@ -5,7 +5,7 @@
  * cuts a run short. Every download is verified against the public key built into the
  * app before it installs. The request carries no personal data, and turning automatic
  * updates off in Settings → About stops it. The browser preview never checks. */
-import { preview } from './bridge';
+import { call, preview } from './bridge';
 import { CHECK_EVERY, readyToRestart, type UpdateState } from './app-updates-policy';
 export { describeUpdate, type UpdateState } from './app-updates-policy';
 
@@ -68,6 +68,11 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
   }
   const check = () => (checking ??= run().finally(() => { checking = null; }));
 
+  /** Re-signs the bundle with the stable local identity (macOS); never blocks an update. */
+  async function localSign(): Promise<void> {
+    try { await call('local_sign_app'); } catch (cause) { console.warn('Local signing failed:', cause); }
+  }
+
   async function restart(): Promise<void> {
     if (!pending) return;
     if (host.busy()) { host.notify('PandaCode will restart to update when your agents finish.'); return; }
@@ -75,7 +80,10 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
     const version = pending.version;
     set({ kind: 'installing', version });
     try {
+      // Waits out the startup signing pass so it never touches a bundle mid-install.
+      await localSign();
       await pending.install();
+      await localSign();
       await (await import('@tauri-apps/plugin-process')).relaunch();
     } catch (cause) { set({ kind: 'error', message: message(cause) }); }
   }

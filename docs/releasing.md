@@ -48,6 +48,16 @@ a new key; if it leaks, rotate it the same way. The maintainer's copy lives outs
 repository (never commit it). Update downloads need the release to be publicly
 readable, so automatic updates start working once the repository is public.
 
+## `npx pandacode`
+
+`packages/npx` is the `pandacode` npm package: it downloads the latest release asset
+(the updater file and its `.sig`), verifies the signature against the public key in
+`tauri.conf.json` and installs it; on macOS it then runs the app with `--local-sign`.
+The `npm` job in `release.yml` publishes it on tag runs with the release version, using
+the repository secret `NPM_TOKEN` (an npm automation token); without it the job warns
+and skips. If the update key is ever rotated, update `PUBKEY` in
+`packages/npx/installer.mjs` (a test compares it with `tauri.conf.json`).
+
 ## 1. Prepare the version
 
 Work on `main` (or land your branch there first) with a clean, reviewed tree.

@@ -29,6 +29,7 @@ mod integrations;
 mod jev;
 mod jev_decisions;
 mod local_servers;
+mod local_signing;
 mod message_queue;
 mod moodboards;
 mod prompt_attachments;
@@ -2836,13 +2837,32 @@ pub fn prepare_environment() {
     providers::widen_process_path();
 }
 
+/// Re-signs the app bundle with the local identity (after an update installs, and before,
+/// to wait out the startup pass); a no-op outside a macOS app bundle.
+#[tauri::command]
+async fn local_sign_app() -> Result<()> {
+    tauri::async_runtime::spawn_blocking(local_signing::sign_running_app)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 pub fn run() {
+    // The npx installer signs the fresh bundle this way, before any window exists.
+    if std::env::args().skip(1).any(|arg| arg == "--local-sign") {
+        std::process::exit(local_signing::cli());
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // Updates come only from GitHub Releases, verified against the public key in tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            // Covers DMG installs and earlier failures; only ad hoc bundles change, on disk only.
+            std::thread::spawn(|| {
+                if let Err(error) = local_signing::sign_running_app() {
+                    eprintln!("Local signing failed: {error}");
+                }
+            });
             if let Ok(cache) = app.path().app_cache_dir() {
                 turn_changes::cleanup_cache(&cache.join("turn-captures"));
             }
@@ -2930,6 +2950,7 @@ pub fn run() {
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 support::open_support,
                 support::support_details,
+                local_sign_app,
                 agent_updates::check_agent_updates,
                 agent_updates::update_agent,
                 moodboards::list_moodboards,

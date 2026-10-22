@@ -123,7 +123,8 @@ jobs:
             printf '\n\n## Installing\n\n'
             printf -- '- **macOS (Apple silicon):** open `PandaCode-macOS-arm64.dmg` and drag PandaCode to Applications. If macOS says it cannot verify the app, open System Settings > Privacy & Security and choose **Open Anyway**.\n'
             printf -- '- **Windows x64:** run `PandaCode-Windows-x64-setup.exe`. If SmartScreen warns about an unknown publisher, choose **More info > Run anyway**.\n'
-            printf -- '- **Linux x64:** `chmod +x PandaCode-Linux-x86_64.AppImage` and run it.\n\n'
+            printf -- '- **Linux x64:** `chmod +x PandaCode-Linux-x86_64.AppImage` and run it.\n'
+            printf -- '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build (macOS: signed locally automatically).\n\n'
             printf 'Each file has a `.sha256` checksum beside it. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.\n'
           } > "$RUNNER_TEMP/notes.md"
       - name: Write the updater manifest
@@ -140,3 +141,28 @@ jobs:
             --title "PandaCode $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             --target "$GITHUB_SHA"
+
+  npm:
+    needs: [prepare, publish]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22', registry-url: 'https://registry.npmjs.org' }
+      - name: Publish npx pandacode
+        working-directory: packages/npx
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN is not set; skipping the npm publish of pandacode."
+            exit 0
+          fi
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          npm publish --provenance --access public
