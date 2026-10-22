@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
-pub(crate) const METHODS: [&str; 9] = ["subscribe", "task.start", "task.messages", "task.send", "task.stop", "task.steer", "task.configure", "approval.respond", "input.respond"];
+pub(crate) const METHODS: [&str; 11] = ["subscribe", "providers.list", "providers.models", "task.start", "task.messages", "task.send", "task.stop", "task.steer", "task.configure", "approval.respond", "input.respond"];
 pub(crate) const OFF: &str = "Remote control is off on this computer";
 pub(crate) const MAX_TEXT: usize = 100 * 1024;
 const SUBSCRIPTION: Duration = Duration::from_secs(10 * 60);
@@ -29,6 +29,8 @@ const PAGE_ROWS: i64 = 400;
 /// Buffered events per subscriber; a viewer that falls this far behind resyncs at run end.
 const MAX_BUFFER: usize = 4096;
 const CUT: &str = "\n…[cut on the host to fit a remote page]";
+/// Harness ids `providers.models` accepts (the same list `storage` allows).
+pub(crate) const PROVIDERS: [&str; 12] = ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "omp"];
 
 pub(crate) fn untrusted(host_name: &str) -> String {
     format!("This computer isn't trusted on {host_name}. Trust it in Settings → Remote access on that computer.")
@@ -82,6 +84,8 @@ pub(crate) fn valid_id(id: &str) -> Result<()> {
 #[derive(Debug, PartialEq)]
 pub(crate) enum Call {
     Subscribe { session_ids: Vec<String> },
+    Providers { force: bool },
+    Models { provider: String, force: bool },
     Start(start::Start),
     Messages { session_id: String, after_id: i64 },
     Send { session_id: String, text: String },
@@ -117,6 +121,13 @@ pub(crate) fn name_param(params: &Value, key: &str) -> Result<Option<String>> {
     }
 }
 
+fn force_param(params: &Value) -> Result<bool> {
+    match params.get("force").filter(|v| !v.is_null()) {
+        None => Ok(false),
+        Some(value) => value.as_bool().ok_or_else(|| "Invalid force.".into()),
+    }
+}
+
 fn configure(params: &Value) -> Result<Call> {
     let model = match (name_param(params, "provider")?, name_param(params, "model")?) {
         (Some(provider), Some(model)) => Some((provider, model)),
@@ -140,6 +151,14 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
             }
             let session_ids = ids.iter().map(|id| id.as_str().filter(|id| valid_id(id).is_ok()).map(str::to_owned).ok_or("Invalid sessionIds.")).collect::<std::result::Result<_, _>>()?;
             Call::Subscribe { session_ids }
+        }
+        "providers.list" => Call::Providers { force: force_param(params)? },
+        "providers.models" => {
+            let provider = name_param(params, "provider")?.ok_or("Missing provider.")?;
+            if !PROVIDERS.contains(&provider.as_str()) {
+                return Err("Unknown provider.".into());
+            }
+            Call::Models { provider, force: force_param(params)? }
         }
         "task.start" => Call::Start(start::parse(params)?),
         "task.messages" => Call::Messages { session_id: id_param(params, "sessionId")?, after_id: params["afterId"].as_i64().unwrap_or(0).max(0) },
@@ -202,6 +221,18 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             subscriber.sessions.extend(session_ids);
             Ok(json!({"tasks": tasks}))
         }
+        Call::Providers { force } => {
+            let mut providers = serde_json::to_value(crate::local_providers(force).await).map_err(|e| e.to_string())?;
+            fit_providers(&mut providers);
+            Ok(providers)
+        }
+        Call::Models { provider, force } => {
+            let mut models = serde_json::to_value(crate::local_provider_models(&provider, force).await?).map_err(|e| e.to_string())?;
+            if let Some(list) = models.as_array_mut() {
+                fit_list(list, PAGE_BUDGET);
+            }
+            Ok(models)
+        }
         Call::Start(request) => start::run(app, from, request).await,
         Call::Messages { session_id, after_id } => {
             local_task(&state, &session_id)?;
@@ -237,6 +268,9 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
         }
         Call::Configure { session_id, model, effort, mode } => {
             local_task(&state, &session_id)?;
+            if let Some((provider, _)) = &model {
+                start::require_installed(provider).await?;
+            }
             if let Some(mode) = mode {
                 crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, Some(mode)).await?;
             }
@@ -314,6 +348,25 @@ pub(crate) fn messages_page(db: &rusqlite::Connection, session_id: &str, after_i
     }
     let has_more = kept.len() < fetched || fetched as i64 == PAGE_ROWS;
     Ok(json!({"messages": kept, "hasMore": has_more, "title": title}))
+}
+
+/// Drops the tail of a list until its JSON fits `budget`.
+pub(crate) fn fit_list(list: &mut Vec<Value>, budget: usize) {
+    let mut size = 2;
+    let keep = list.iter().take_while(|item| {
+        size += item.to_string().len() + 1;
+        size <= budget
+    }).count();
+    list.truncate(keep);
+}
+
+/// Trims the longest model lists until the provider list fits one reply.
+pub(crate) fn fit_providers(providers: &mut Value) {
+    while providers.to_string().len() > PAGE_BUDGET {
+        let Some(models) = providers.as_array_mut().and_then(|list| list.iter_mut().filter_map(|p| p["models"].as_array_mut()).max_by_key(|models| models.len())).filter(|models| !models.is_empty()) else { return };
+        let keep = models.len() / 2;
+        models.truncate(keep);
+    }
 }
 
 /// Appends an event to a subscriber's buffer, joining consecutive text deltas.
@@ -496,6 +549,33 @@ mod tests {
             assert!(parse(true, gone, &json!({})).is_err(), "{gone}");
         }
         assert!(valid_id(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn provider_requests_are_validated() {
+        assert_eq!(parse(true, "providers.list", &json!({})), Ok(Call::Providers { force: false }));
+        assert_eq!(parse(true, "providers.list", &json!({"force": true})), Ok(Call::Providers { force: true }));
+        assert!(parse(true, "providers.list", &json!({"force": "yes"})).is_err());
+        assert_eq!(parse(true, "providers.models", &json!({"provider": "codex", "force": null})), Ok(Call::Models { provider: "codex".into(), force: false }));
+        assert_eq!(parse(true, "providers.models", &json!({"provider": "omp", "force": true})), Ok(Call::Models { provider: "omp".into(), force: true }));
+        for bad in [json!({}), json!({"provider": "../bin/sh"}), json!({"provider": "gemini"}), json!({"provider": 3})] {
+            assert!(parse(true, "providers.models", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn provider_lists_are_trimmed_to_one_reply() {
+        let model = json!({"id": "m", "name": "x".repeat(1000)});
+        let mut list = vec![model.clone(); 400];
+        fit_list(&mut list, PAGE_BUDGET);
+        assert!(!list.is_empty() && list.len() < 400 && json!(list).to_string().len() <= PAGE_BUDGET);
+        let mut small = vec![model.clone(); 3];
+        fit_list(&mut small, PAGE_BUDGET);
+        assert_eq!(small.len(), 3);
+        let mut providers = json!([{"id": "opencode", "models": vec![model.clone(); 400]}, {"id": "claude", "models": [model]}]);
+        fit_providers(&mut providers);
+        assert!(providers.to_string().len() <= PAGE_BUDGET);
+        assert_eq!(providers[1]["models"].as_array().unwrap().len(), 1);
     }
 
     #[test]

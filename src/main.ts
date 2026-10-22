@@ -822,6 +822,54 @@ function loadModels(id: ProviderId): Promise<ProviderModel[]> {
   return pending;
 }
 
+/* Another computer's catalog (PandaCode Connect): kept per device, never in state.providers. */
+const remoteCatalogs = new Map<string, Promise<Provider[]>>();
+const remoteModelCatalogs = new Map<string, Promise<ProviderModel[]>>();
+let localChoice: { provider: ProviderId; model: string } | undefined;
+/** The computer the composer's picker lists: a mirror task's, a new task's chosen one, else undefined (local). */
+function composerDevice(): string | undefined {
+  const s = session();
+  return s?.remoteDevice?.id ?? (s && newTaskView() && remoteChoice !== LOCAL ? remoteChoice : undefined);
+}
+function cachedFor<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
+  let pending = cache.get(key);
+  if (!pending) {
+    const made = pending = load();
+    cache.set(key, made);
+    const drop = () => { if (cache.get(key) === made) cache.delete(key); };
+    made.catch(drop);
+    setTimeout(drop, 5 * 60 * 1000);
+  }
+  return pending;
+}
+const remoteProviders = (deviceId: string) => cachedFor(remoteCatalogs, deviceId, () => call<Provider[]>('list_providers', { deviceId }));
+const remoteModels = (deviceId: string, id: ProviderId) => cachedFor(remoteModelCatalogs, deviceId + ':' + id, () => call<ProviderModel[]>('list_provider_models', { provider: id, deviceId }));
+/** A new task's provider/model on the chosen computer: kept when it exists there, else that computer's first harness. Switching back to local restores the local choice. */
+async function adaptPickerToComputer(task: Session, deviceId: string, name: string): Promise<void> {
+  let choice: { provider: ProviderId; model: string } | undefined;
+  let notice = '';
+  if (deviceId === LOCAL) { choice = localChoice; localChoice = undefined; }
+  else {
+    try {
+      const found = (await remoteProviders(deviceId)).filter(p => p.installed);
+      const have = found.find(p => p.id === task.provider);
+      const models = have ? await remoteModels(deviceId, have.id) : [];
+      const model = task.model || 'default';
+      if (have && (model === 'default' || models.some(m => m.id === model))) return;
+      const next = have ?? found[0];
+      if (!next) return;
+      localChoice ??= { provider: task.provider, model };
+      choice = { provider: next.id, model: 'default' };
+      notice = `${name} doesn’t have ${have ? model : provider(task.provider)?.name ?? task.provider}. Using ${next.name}.`;
+    } catch { return; }
+  }
+  if (!choice || state.sessionId !== task.id || remoteChoice !== deviceId) return;
+  const updated = await call<Session>('configure_session', { sessionId: task.id, provider: choice.provider, model: choice.model });
+  const index = state.sessions.findIndex(item => item.id === task.id); if (index >= 0) state.sessions[index] = updated;
+  renderComposer(); renderHeader();
+  if (notice) notify(notice);
+}
+
 function renderNavigation(): void {
   // Preserve the native drag source while agent updates arrive in the background.
   if (sidebarDragging) return;
@@ -2737,7 +2785,8 @@ async function showModel(anchor: HTMLElement): Promise<void> {
   const generation = state.generation;
   const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null)]).finally(release);
   if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || isRunning()) return;
-  const named = library ? namedTeams(library) : [];
+  const device = composerDevice();
+  const named = library && !device ? namedTeams(library) : [];
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: teamDetail(profile, id => provider(id)?.name ?? id), provider: profile.setup.architect.provider, selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: async id => {
@@ -2752,9 +2801,10 @@ async function showModel(anchor: HTMLElement): Promise<void> {
         if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
     },
-    anchor, providers: state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
+    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
-    loadModels, recent: recentModels, onClose: () => { modelPickerCleanup = undefined; },
+    loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
+    recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
       if (selected.id !== state.sessionId || generation !== state.generation || isRunning()) throw new Error('Select the task again to change its reasoning effort.');
       configuringSessions.add(selected.id);
@@ -2778,8 +2828,10 @@ async function showModel(anchor: HTMLElement): Promise<void> {
         }
         const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
-        localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
+        if (!device) {
+          if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
+          localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
+        } else localChoice = undefined;
         if (selected.id === state.sessionId && generation === state.generation) {
           if (providerId !== selected.provider) {
             // The harness change is already durable; a transcript refresh error
@@ -3312,7 +3364,11 @@ async function initRemote(): Promise<void> {
   if (status) { signedIn = status.signedIn; await refreshRemoteTargets(signedIn); }
 }
 async function showComputerMenu(anchor: HTMLElement): Promise<void> {
-  await showChoices(anchor, { title: 'Run on', width: 280, items: computerItems(remoteTargets, remoteChoice), onSelect: id => { closeChoiceMenu(); remoteChoice = id; renderHeader(); } });
+  await showChoices(anchor, { title: 'Run on', width: 280, items: computerItems(remoteTargets, remoteChoice), onSelect: id => {
+    closeChoiceMenu(); remoteChoice = id; renderHeader();
+    const task = session();
+    if (task && newTaskView()) run(adaptPickerToComputer(task, id, remoteTargets.find(item => item.deviceId === id)?.name ?? 'That computer'));
+  } });
 }
 /** Resolves true on Continue; Cancel or closing the dialog resolves false. */
 function confirmBehind(name: string, check: RemoteRepoCheck): Promise<boolean> {

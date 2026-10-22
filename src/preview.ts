@@ -99,6 +99,12 @@ const previewMimoEndpoints = [
 ];
 let previewMimoEndpoint: string | null = null;
 // Representative catalog fixtures only; the native app queries installed harnesses.
+/** Another computer's smaller catalog (PandaCode Connect). */
+const remoteProviders = (): Provider[] => ['claude', 'codex'].map(id => providers.find(p => p.id === id)!).map(p => ({ ...p, models: remoteCatalog(p.id) }));
+function remoteCatalog(id: ProviderId): ProviderModel[] {
+  if (id === 'claude') return ['sonnet', 'opus'].map(model => fallbackModel('claude', model));
+  return id === 'codex' ? ['gpt-5-codex', 'gpt-5'].map(model => fallbackModel('codex', model)) : [];
+}
 const catalogs: Record<ProviderId, ProviderModel[]> = {
   pi: [{ id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Sample Pi model.', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }], contextWindow: 200000 }],
   omp: [{ id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Sample omp model.', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }], contextWindow: 200000 }],
@@ -839,7 +845,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = reordered.map(taskSummary); break;
     }
     case 'get_task': result = settleDraft(session(args.sessionId)); break;
-    case 'list_providers': result = providers; break;
+    case 'list_providers': result = args.deviceId ? remoteProviders() : providers; break;
     case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
@@ -852,7 +858,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'local_sign_app': break;
     case 'support_details': result = { version: 'Preview', platform: 'Browser preview', architecture: 'Not reported' }; break;
     case 'browser_inspect': result = args.action === 'read' ? { url: browserState.url, title: browserState.title, text: 'Browser preview sample page', elements: [] } : { dispatched: true }; break;
-    case 'list_provider_models': result = args.provider === 'opencode' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
+    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'opencode' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
     case 'list_opencode_models': result = {models: openCodePreviewModels, selectedModelIds: previewOpenCodeSelection(), error: null}; break;
     case 'save_opencode_models': {
       if (!Array.isArray(args.modelIds) || args.modelIds.length > 100 || args.modelIds.some((id: unknown) => typeof id !== 'string' || !id.includes('/') || id.length > 200)) throw new Error('Choose valid OpenCode models.');

@@ -667,6 +667,7 @@ async fn configure_session(
     project_id: Option<String>,
 ) -> Result<Session> {
     if project_id.is_none() {
+        remote::catalog::check_mirror(&app, &state, &session_id, &provider, &model)?;
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
     }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
@@ -1990,8 +1991,16 @@ async fn respond_approval(
     tx.respond_approval(&state.store, &session_id, request_id, approved)
 }
 #[tauri::command]
-async fn list_providers(force: Option<bool>) -> Vec<providers::ProviderInfo> {
-    if force.unwrap_or(false) {
+async fn list_providers(app: tauri::AppHandle, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
+    let force = force.unwrap_or(false);
+    if let Some(remote) = remote::catalog::providers(&app, device_id, force).await? {
+        return Ok(remote);
+    }
+    serde_json::to_value(local_providers(force).await).map_err(|e| e.to_string())
+}
+/// This computer's harnesses; `force` drops the cached ACP catalogs first.
+pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo> {
+    if force {
         providers::acp_catalog::invalidate("antigravity");
         providers::acp_catalog::invalidate("grok");
     }
@@ -2000,9 +2009,16 @@ async fn list_providers(force: Option<bool>) -> Vec<providers::ProviderInfo> {
         .unwrap_or_default()
 }
 #[tauri::command]
-async fn list_provider_models(provider: String, force: Option<bool>) -> Result<Vec<providers::ModelInfo>> {
-    if force.unwrap_or(false) { providers::acp_catalog::invalidate(&provider); }
-    providers::list_models(&provider).await
+async fn list_provider_models(app: tauri::AppHandle, provider: String, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
+    let force = force.unwrap_or(false);
+    if let Some(remote) = remote::catalog::models(&app, device_id, &provider, force).await? {
+        return Ok(remote);
+    }
+    serde_json::to_value(local_provider_models(&provider, force).await?).map_err(|e| e.to_string())
+}
+pub(crate) async fn local_provider_models(provider: &str, force: bool) -> Result<Vec<providers::ModelInfo>> {
+    if force { providers::acp_catalog::invalidate(provider); }
+    providers::list_models(provider).await
 }
 
 #[tauri::command]

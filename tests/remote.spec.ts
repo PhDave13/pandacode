@@ -161,3 +161,51 @@ test('the trust toggle shows without host mode', async ({ page }) => {
   await expect(panel.getByRole('checkbox', { name: 'Allow remote control of this computer' })).not.toBeChecked();
   await expect(panel.getByRole('checkbox', { name: 'Trusted: Studio iMac' })).toBeChecked();
 });
+
+const harnesses = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
+async function openPicker(page: Page) {
+  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  return harnesses(page);
+}
+
+test('picking another computer limits the picker to its catalog, and local is restored', async ({ page }) => {
+  await signedInNewTask(page);
+  await chooseStudio(page);
+  const picker = await openPicker(page);
+  await expect(picker.getByRole('region', { name: 'Claude Code' })).toBeVisible();
+  await expect(picker.getByRole('region', { name: 'Codex' })).toBeVisible();
+  await expect(picker.getByRole('region', { name: 'Kimi Code' })).toHaveCount(0);
+  await expect(picker.getByRole('region', { name: 'OpenCode' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  const computer = page.locator('#composer-computer');
+  await computer.click();
+  await page.getByRole('menuitemradio', { name: 'This computer' }).click();
+  const local = await openPicker(page);
+  await expect(local.getByRole('region', { name: 'Kimi Code' })).toBeVisible();
+});
+
+test('a model missing on the chosen computer is swapped, with a notice', async ({ page }) => {
+  await page.addInitScript(() => { localStorage.setItem('pandacode.defaultProvider', 'kimi'); localStorage.setItem('pandacode.provider', 'kimi'); });
+  await signedInNewTask(page);
+  await chooseStudio(page);
+  await expect(page.locator('#toast')).toContainText('Studio iMac doesn’t have Kimi Code. Using Claude Code.');
+  let picker = await openPicker(page);
+  await expect(picker.getByRole('region', { name: 'Claude Code' }).locator('[aria-current="true"]')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await page.locator('#composer-computer').click();
+  await page.getByRole('menuitemradio', { name: 'This computer' }).click();
+  picker = await openPicker(page);
+  await expect(picker.getByRole('region', { name: 'Kimi Code' }).locator('[aria-current="true"]')).toHaveCount(1);
+});
+
+test('a task running on another computer lists that computer’s catalog', async ({ page }) => {
+  await signedInNewTask(page);
+  await chooseStudio(page);
+  await page.getByRole('textbox', { name: 'Message your coding agent' }).fill('Mirror task');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.locator('#composer-area .composer-computer-fixed')).toHaveText('on Studio iMac');
+  const picker = await openPicker(page);
+  await expect(picker.getByRole('region', { name: 'Claude Code' })).toBeVisible();
+  await expect(picker.getByRole('region', { name: 'Kimi Code' })).toHaveCount(0);
+});

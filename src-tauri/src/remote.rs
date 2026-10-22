@@ -2,6 +2,7 @@
 //! socket, host RPC for this computer's tasks, and mirrors: local tasks that run on
 //! another of the user's computers. Nothing touches the network until the user signs in.
 mod auth;
+pub(crate) mod catalog;
 mod client;
 mod config;
 mod crypto;
@@ -91,6 +92,8 @@ pub(crate) struct Inner {
     flow: Option<auth::Flow>,
     /// Dropping this cancels the device-flow poll in `remote_sign_in_finish`.
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Other computers' harnesses and models, for their mirrors' model pickers.
+    catalog: catalog::Cache,
 }
 
 impl Inner {
@@ -139,6 +142,7 @@ impl Inner {
         self.devices.clear();
         self.presence = false;
         self.subscribers.clear();
+        self.catalog = Default::default();
         true
     }
 }
@@ -502,6 +506,7 @@ pub async fn remote_set_trusted(app: tauri::AppHandle, device_id: String, truste
         } else {
             inner.settings.trusted.remove(&device_id);
             inner.subscribers.remove(&device_id);
+            inner.catalog.forget(&device_id);
         }
         inner.settings.clone()
     };
@@ -533,6 +538,7 @@ pub async fn remote_revoke_device(app: tauri::AppHandle, device_id: String) -> R
             inner.devices.retain(|device| device.id != device_id);
             inner.subscribers.remove(&device_id);
             inner.keys.remove(&device_id);
+            inner.catalog.forget(&device_id);
             inner.settings.trusted.remove(&device_id);
             let settings = inner.settings.clone();
             drop(inner);

@@ -151,12 +151,18 @@ fn checkout(root: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn run(app: &tauri::AppHandle, from: &str, start: Start) -> Result<Value> {
+/// Refuses a harness this computer doesn't have.
+pub(crate) async fn require_installed(provider: &str) -> Result<()> {
     let providers = tauri::async_runtime::spawn_blocking(crate::providers::discover).await.map_err(|e| e.to_string())?;
-    if !providers.iter().any(|p| p.id == start.provider && p.installed) {
-        let name = providers.iter().find(|p| p.id == start.provider).map_or(start.provider.as_str(), |p| p.name.as_str());
+    if !providers.iter().any(|p| p.id == provider && p.installed) {
+        let name = providers.iter().find(|p| p.id == provider).map_or(provider, |p| p.name.as_str());
         return Err(format!("{name} is not installed on {}.", super::config::device_name()));
     }
+    Ok(())
+}
+
+pub(crate) async fn run(app: &tauri::AppHandle, from: &str, start: Start) -> Result<Value> {
+    require_installed(&start.provider).await?;
     let handle = app.clone();
     let (repo, wanted, worktree) = (start.repo.clone(), start.branch.clone(), start.worktree);
     let (project, branch) = tauri::async_runtime::spawn_blocking(move || -> Result<(Project, String)> {

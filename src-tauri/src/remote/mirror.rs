@@ -382,6 +382,7 @@ pub async fn remote_start_task(
             return Err(format!("{} does not allow remote control.", super::device_label(&device_id)));
         }
     }
+    super::catalog::check(&app, &device_id, &provider, &model)?;
     let prompt = prompt.trim().to_owned();
     if prompt.is_empty() || prompt.len() > host::MAX_TEXT {
         return Err("Send between 1 byte and 100 KB of text.".into());

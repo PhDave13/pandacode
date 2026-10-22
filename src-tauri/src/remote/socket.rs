@@ -317,8 +317,15 @@ fn presence(app: &tauri::AppHandle, list: &Value) {
 }
 
 /// The list replaces the known devices. A device missing from it is gone, with its subscription.
+/// A device that went offline, came back or changed hosting loses its cached harness lists.
 fn apply_presence(inner: &mut Inner, list: &[Value]) {
-    inner.devices = parse_devices(list);
+    let devices = parse_devices(list);
+    for old in &inner.devices {
+        if !devices.iter().any(|d| d.id == old.id && d.online == old.online && d.host == old.host) {
+            inner.catalog.forget(&old.id);
+        }
+    }
+    inner.devices = devices;
     inner.presence = true;
     let Inner { devices, subscribers, keys, .. } = inner;
     subscribers.retain(|id, _| devices.iter().any(|d| &d.id == id));
@@ -434,6 +441,22 @@ mod tests {
         assert_eq!(inner.subscribers.keys().collect::<Vec<_>>(), ["a"]);
         apply_presence(&mut inner, &[]);
         assert!(inner.devices.is_empty() && inner.subscribers.is_empty());
+    }
+
+    #[test]
+    fn going_offline_or_coming_back_forgets_cached_lists() {
+        let mut inner = Inner::default();
+        let row = |id: &str, online: bool| json!({"id": id, "online": online, "host": true});
+        apply_presence(&mut inner, &[row("a", true), row("b", true)]);
+        let now = std::time::Instant::now();
+        for id in ["a", "b"] {
+            inner.catalog.put((id.into(), None), now, json!([]));
+        }
+        apply_presence(&mut inner, &[row("a", false), row("b", true)]);
+        assert!(!inner.catalog.knows("a") && inner.catalog.knows("b"));
+        inner.catalog.put(("a".into(), None), now, json!([]));
+        apply_presence(&mut inner, &[row("a", true), row("b", true)]);
+        assert!(!inner.catalog.knows("a") && inner.catalog.knows("b"));
     }
 
     #[test]
