@@ -68,6 +68,25 @@ Relay token: `base64url(JSON {acct, dev, iat, exp}) + "." + base64url(HMAC-SHA25
 It is valid for 30 days, and only while the device is still registered on the account. Revoking a
 device closes its socket and makes its token invalid.
 
+**Refresh.** While connected, the desktop checks the token at connect and every 12 hours. With
+fewer than 7 days left it calls `POST /v1/token` and stores the fresh token (same account and
+device, later expiry) in the keychain and in memory. A failure is left for the next check; a
+`401` follows the sign-out rule above.
+
+**Startup.** Only a computer with an account in `remote.json` reads the keychain. A missing (or
+expired) token means signed out. Any other keychain error (a locked keychain, `-25308` right
+after an update relaunch) is not a sign-out: status shows signed in but not connected, and the
+token is read again after 5 s, 15 s and 60 s; when it reads, the socket starts and
+`remote://status` is sent.
+
+**Adopting pre-0.3.20 items.** Before 0.3.20 the keychain accounts were `relay-token` and
+`device-key`. At startup, when the scoped token or key is missing, the installed app (data
+folder `ai.pandacode.desktop`, never a dev build) reads those once per launch. It adopts them only
+if the legacy token parses, is unexpired and its `dev` is this device id: the token is written
+to the scoped name, and so is the legacy key when it differs from the scoped one (the relay
+registered the legacy key for this device id). After both writes succeed the legacy items are
+deleted.
+
 Build config is `option_env!("PANDACODE_RELAY_URL")` and `option_env!("PANDACODE_GITHUB_CLIENT_ID")`.
 Environment variables of the same names override them at run time. If either is missing, remote
 access is shown as "not configured in this build".
@@ -81,6 +100,7 @@ All routes except auth take `Authorization: Bearer <relay token>`. Errors are `{
   The desktop uses it only for an explicit `remote_devices` (or trust) call made before the
   socket's first presence frame.
 - `DELETE /v1/devices/:id` → `{ ok: true }`
+- `POST /v1/token` → `{ token }`: a fresh 30-day token for the same account and device
 - `GET /v1/connect?host=0|1` (WebSocket upgrade) → joins the account's Durable Object, advertising
   whether this device hosts
 

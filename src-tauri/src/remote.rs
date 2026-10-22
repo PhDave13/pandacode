@@ -70,6 +70,8 @@ pub(crate) struct Subscriber {
 pub(crate) struct Inner {
     settings: config::Settings,
     token: Option<String>,
+    /// Signed in, but the keychain refused the token read at startup; retried in the background.
+    unreadable: bool,
     connected: bool,
     /// Bumped on every start/stop so an old socket task knows to exit.
     generation: u64,
@@ -132,6 +134,7 @@ impl Inner {
         self.connected = false;
         self.fail_pending(None, "Signed out of PandaCode Connect.");
         self.token = None;
+        self.unreadable = false;
         self.settings.account = None;
         self.devices.clear();
         self.presence = false;
@@ -196,7 +199,7 @@ impl Remote {
         let inner = self.lock();
         let mut status = json!({
             "configured": config::build().is_some(),
-            "signedIn": inner.token.is_some(),
+            "signedIn": inner.token.is_some() || inner.unreadable,
             "device": {"id": inner.settings.device_id, "name": config::device_name(), "fingerprint": fingerprint},
             "hostEnabled": inner.settings.host_enabled,
             "connected": inner.connected,
@@ -230,11 +233,78 @@ pub(crate) fn setup(app: &tauri::AppHandle, dir: &std::path::Path) {
     let settings = config::load(dir);
     let accounts = config::accounts(dir);
     // Only a signed-in computer reads the keychain at startup.
-    let token = settings.account.as_ref().and_then(|_| secret_store::get(config::SERVICE, &accounts.token)).filter(|token| config::token_valid(token, chrono::Utc::now().timestamp()));
+    let (startup, key) = if settings.account.is_some() { signed_in_start(dir, &accounts, &settings.device_id) } else { (config::Startup::SignedOut, None) };
+    let unreadable = startup == config::Startup::Unreadable;
+    let token = match startup {
+        config::Startup::SignedIn(token) => Some(token),
+        _ => None,
+    };
     let signed_in = token.is_some();
-    app.manage(Remote { dir: dir.to_owned(), accounts, inner: Mutex::new(Inner { settings, token, ..Default::default() }), key: Mutex::new(None) });
+    app.manage(Remote { dir: dir.to_owned(), accounts, inner: Mutex::new(Inner { settings, token, unreadable, ..Default::default() }), key: Mutex::new(key) });
     if signed_in && config::build().is_some() {
         socket::start(app);
+    }
+    if unreadable {
+        tauri::async_runtime::spawn(retry_token(app.clone()));
+    }
+}
+
+/// Reads the token, first adopting the pre-0.3.20 unscoped items once (one attempt per
+/// launch) when the scoped ones are missing. Returns the adopted key so it is used even if
+/// writing it failed.
+fn signed_in_start(dir: &std::path::Path, accounts: &config::Accounts, device_id: &str) -> (config::Startup, Option<StaticSecret>) {
+    let now = chrono::Utc::now().timestamp();
+    let token = config::read_key(&accounts.token);
+    let key = config::read_key(&accounts.key);
+    let legacy = config::legacy_accounts();
+    let read_legacy = || (config::read_key(&legacy.token).ok().flatten(), config::read_key(&legacy.key).ok().flatten());
+    let Some(adopted) = config::adoption(dir, device_id, now, &token, &key, read_legacy) else { return (config::startup(token, now), None) };
+    let mut saved = secret_store::set(config::SERVICE, &accounts.token, &adopted.token);
+    let secret = adopted.key.as_deref().and_then(crypto::decode_secret);
+    if let Some(text) = &adopted.key {
+        saved = saved.and(secret_store::set(config::SERVICE, &accounts.key, text));
+    }
+    match saved {
+        Ok(()) => {
+            secret_store::remove(config::SERVICE, &legacy.token);
+            secret_store::remove(config::SERVICE, &legacy.key);
+        }
+        Err(error) => eprintln!("Could not move the PandaCode Connect sign-in to this install's Keychain items: {error}"),
+    }
+    (config::Startup::SignedIn(adopted.token), secret)
+}
+
+/// After a keychain error at startup: reads the token again at 5 s, 15 s and 60 s. A token
+/// starts the socket; a real not-found signs out; errors keep the account as it is.
+async fn retry_token(app: tauri::AppHandle) {
+    for wait in [5, 15, 60] {
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+        let state = remote(&app);
+        if !state.lock().unreadable {
+            return;
+        }
+        let startup = config::startup(config::read_key(&state.accounts.token), chrono::Utc::now().timestamp());
+        if startup == config::Startup::Unreadable {
+            continue;
+        }
+        let signed_in = {
+            let mut inner = state.lock();
+            // A sign-in or sign-out meanwhile settled it.
+            if !inner.unreadable {
+                return;
+            }
+            inner.unreadable = false;
+            match startup {
+                config::Startup::SignedIn(token) => inner.token = Some(token),
+                _ => inner.token = None,
+            }
+            inner.token.is_some()
+        };
+        if signed_in && config::build().is_some() {
+            socket::start(&app);
+        }
+        emit_status(&app);
+        return;
     }
 }
 
@@ -359,6 +429,7 @@ pub async fn remote_sign_in_finish(app: tauri::AppHandle) -> Result<Value> {
     let settings = {
         let mut inner = state.lock();
         inner.token = Some(token);
+        inner.unreadable = false;
         inner.settings.account = Some(account);
         inner.settings.clone()
     };

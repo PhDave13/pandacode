@@ -22,6 +22,59 @@ pub(crate) fn accounts(dir: &Path) -> Accounts {
     let id: String = digest[..6].iter().map(|byte| format!("{byte:02x}")).collect();
     Accounts { token: format!("relay-token:{id}"), key: format!("device-key:{id}") }
 }
+
+/// The unscoped account names used before 0.3.20, adopted once by the installed app.
+pub(crate) fn legacy_accounts() -> Accounts {
+    Accounts { token: "relay-token".into(), key: "device-key".into() }
+}
+
+/// Only the installed app (data folder named after its identifier) ever owned the legacy
+/// items; a dev build must never take them.
+pub(crate) fn default_install(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|name| name == "ai.pandacode.desktop")
+}
+
+/// Legacy values to copy to the scoped names: the token, and the key when it differs
+/// from the scoped one (the legacy key is the one the relay registered for this device).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Adoption {
+    pub token: String,
+    pub key: Option<String>,
+}
+
+/// Whether to adopt the legacy items. `legacy` is read only when a scoped item is missing
+/// on the installed app, so other installs never touch (or get prompted for) them.
+pub(crate) fn adoption(dir: &Path, device_id: &str, now: i64, token: &crate::Result<Option<String>>, key: &crate::Result<Option<String>>, legacy: impl FnOnce() -> (Option<String>, Option<String>)) -> Option<Adoption> {
+    if !default_install(dir) || !(matches!(token, Ok(None)) || matches!(key, Ok(None))) {
+        return None;
+    }
+    let (legacy_token, legacy_key) = legacy();
+    let legacy_token = legacy_token.filter(|t| token_valid(t, now) && parse_token(t).is_some_and(|claims| claims.dev == device_id))?;
+    let legacy_key = legacy_key.filter(|k| super::crypto::decode_secret(k).is_some() && key.as_ref().ok().and_then(Option::as_deref) != Some(k.as_str()));
+    Some(Adoption { token: legacy_token, key: legacy_key })
+}
+
+/// How a signed-in computer starts: only a real not-found (or an unusable token) signs out;
+/// a keychain error keeps the account and is retried.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Startup {
+    SignedIn(String),
+    SignedOut,
+    Unreadable,
+}
+
+pub(crate) fn startup(read: crate::Result<Option<String>>, now: i64) -> Startup {
+    match read {
+        Ok(Some(token)) if token_valid(&token, now) => Startup::SignedIn(token),
+        Ok(_) => Startup::SignedOut,
+        Err(_) => Startup::Unreadable,
+    }
+}
+
+/// Refresh once fewer than 7 days are left of the token's 30.
+pub(crate) fn needs_refresh(token: &str, now: i64) -> bool {
+    parse_token(token).is_some_and(|claims| claims.exp - now < 7 * 24 * 3600)
+}
 const FILE: &str = "remote.json";
 
 /// The relay and GitHub OAuth app this build talks to. Missing either means "not configured".
@@ -201,6 +254,49 @@ mod tests {
         assert_eq!(parse_token(&format!("{}.", token(r#"{"acct":"a","dev":"d","iat":1,"exp":2}"#).split('.').next().unwrap())), None);
         assert_eq!(parse_token(&token(r#"{"acct":"","dev":"d","iat":1,"exp":2}"#)), None);
         assert_eq!(parse_token(&token("not json")), None);
+    }
+
+    #[test]
+    fn legacy_items_are_adopted_only_when_they_belong_here() {
+        let installed = Path::new("/Users/me/Library/Application Support/ai.pandacode.desktop");
+        let good = token(r#"{"acct":"gh:1","dev":"d1","iat":100,"exp":200}"#);
+        let legacy_key = super::super::crypto::encode_secret(&super::super::crypto::generate());
+        let scoped_key = super::super::crypto::encode_secret(&super::super::crypto::generate());
+        let legacy = |t: &String, k: &String| {
+            let pair = (Some(t.clone()), Some(k.clone()));
+            move || pair
+        };
+        // Missing scoped token: adopt both, the legacy key replacing a different scoped key.
+        assert_eq!(adoption(installed, "d1", 150, &Ok(None), &Ok(Some(scoped_key.clone())), legacy(&good, &legacy_key)), Some(Adoption { token: good.clone(), key: Some(legacy_key.clone()) }));
+        // The same key is not written again.
+        assert_eq!(adoption(installed, "d1", 150, &Ok(None), &Ok(Some(legacy_key.clone())), legacy(&good, &legacy_key)), Some(Adoption { token: good.clone(), key: None }));
+        // Another device's token, an expired one, or a dev build: nothing.
+        assert_eq!(adoption(installed, "d2", 150, &Ok(None), &Ok(None), legacy(&good, &legacy_key)), None);
+        assert_eq!(adoption(installed, "d1", 200, &Ok(None), &Ok(None), legacy(&good, &legacy_key)), None);
+        assert_eq!(adoption(Path::new("/Users/me/Library/Application Support/ai.pandacode.dev"), "d1", 150, &Ok(None), &Ok(None), || panic!("a dev build read the legacy items")), None);
+        // Both scoped items present, or the token unreadable: the legacy items are never read.
+        assert_eq!(adoption(installed, "d1", 150, &Ok(Some(good.clone())), &Ok(Some(scoped_key)), || panic!("read")), None);
+        assert_eq!(adoption(installed, "d1", 150, &Err("locked".into()), &Err("locked".into()), || panic!("read")), None);
+        assert_eq!(adoption(installed, "d1", 150, &Ok(None), &Ok(None), || (None, None)), None);
+    }
+
+    #[test]
+    fn only_a_missing_token_signs_out_at_startup() {
+        let good = token(r#"{"acct":"gh:1","dev":"d1","iat":100,"exp":200}"#);
+        assert_eq!(startup(Ok(Some(good.clone())), 150), Startup::SignedIn(good.clone()));
+        assert_eq!(startup(Ok(Some(good)), 250), Startup::SignedOut);
+        assert_eq!(startup(Ok(None), 150), Startup::SignedOut);
+        assert_eq!(startup(Err("Keychain locked (-25308)".into()), 150), Startup::Unreadable);
+    }
+
+    #[test]
+    fn tokens_refresh_in_their_last_week() {
+        let day = 24 * 3600;
+        let t = token(&format!(r#"{{"acct":"gh:1","dev":"d1","iat":0,"exp":{}}}"#, 30 * day));
+        assert!(!needs_refresh(&t, 0));
+        assert!(!needs_refresh(&t, 23 * day));
+        assert!(needs_refresh(&t, 23 * day + 1));
+        assert!(!needs_refresh("garbage", 0));
     }
 
     #[test]

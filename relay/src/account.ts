@@ -71,6 +71,8 @@ export class Account extends DurableObject<Env> {
     }
 
     if (pathname === "/v1/connect") return this.join(request, device);
+    // The Worker signs the fresh token after this 200; reaching here means the device is still registered.
+    if (pathname === "/v1/token") return request.method === "POST" ? json({ ok: true }) : fail(405, "method not allowed");
     if (pathname === "/v1/devices" && request.method === "GET") {
       if (this.reap()) this.broadcastPresence();
       return json({ devices: this.devices() });

@@ -24,6 +24,16 @@ test("token round trip, expiry, tampering, wrong secret", async () => {
   for (const bad of ["", "x", "a.b.c", "!!.!!"]) assert.equal(await verifyToken("s3cret", bad, 1), null);
 });
 
+test("refreshed token keeps acct/dev, moves iat and exp forward", async () => {
+  const old = await verifyToken("s3cret", await signToken("s3cret", "gh:1", ID, 1000), 1001);
+  assert.ok(old);
+  const fresh = await verifyToken("s3cret", await signToken("s3cret", old.acct, old.dev, 5000), 5001);
+  assert.deepEqual(fresh, { acct: "gh:1", dev: ID, iat: 5000, exp: 5000 + TOKEN_TTL_SECONDS });
+  // A device that re-registered after the old token's iat can't use it, but a fresh one passes.
+  assert.equal(issuedAfterRegistration(old.iat, 3000), false);
+  assert.equal(issuedAfterRegistration(5000, 3000), true);
+});
+
 test("bucket allows a burst of 100, refills at 20/s", () => {
   let b = fullBucket(0);
   for (let i = 0; i < 100; i++) {

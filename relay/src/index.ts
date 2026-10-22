@@ -33,7 +33,7 @@ export default {
     const path = url.pathname;
     if (path === "/v1/auth/github") return request.method === "POST" ? authGithub(request, env) : fail(405, "method not allowed");
 
-    const known = path === "/v1/connect" || path === "/v1/devices" || path.startsWith("/v1/devices/");
+    const known = path === "/v1/connect" || path === "/v1/devices" || path === "/v1/token" || path.startsWith("/v1/devices/");
     if (!known) return fail(404, "not found");
     const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1];
     const claims = bearer ? await verifyToken(env.SESSION_SECRET, bearer, Math.floor(Date.now() / 1000)) : null;
@@ -45,6 +45,8 @@ export default {
     headers.set("x-device-id", claims.dev);
     headers.set("x-token-iat", String(claims.iat));
     headers.delete("authorization");
-    return stub(env, claims.acct).fetch(new Request(request, { headers }));
+    const res = await stub(env, claims.acct).fetch(new Request(request, { headers }));
+    if (path !== "/v1/token" || !res.ok) return res;
+    return json({ token: await signToken(env.SESSION_SECRET, claims.acct, claims.dev, Math.floor(Date.now() / 1000)) });
   },
 } satisfies ExportedHandler<Env>;
