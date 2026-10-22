@@ -1,6 +1,6 @@
 /* Settings → Remote access: sign in with GitHub, allow this computer to be driven, and
  * manage the account's devices. Nothing reaches the network until the user signs in. */
-import './remote.css';
+import './remote-settings.css';
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import type { RemoteDevice, RemoteHost, RemoteSignIn, RemoteStatus } from './remote-types';

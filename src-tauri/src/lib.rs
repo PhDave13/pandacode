@@ -200,7 +200,8 @@ fn reconcile_inactive_task(
         task.task_stage = "in_progress".into();
         return task;
     }
-    if matches!(task.status.as_str(), "running" | "waiting") && !agents.contains_key(&task.id) {
+    // A mirror runs on its host; its events keep the status.
+    if matches!(task.status.as_str(), "running" | "waiting") && !agents.contains_key(&task.id) && task.remote_device.is_none() {
         if let Err(error) = store.finish_task_turn(&task.id, false, true) {
             eprintln!("Could not persist interrupted task state: {error}");
         }
@@ -657,12 +658,16 @@ async fn set_task_stage(
 }
 #[tauri::command]
 async fn configure_session(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     provider: String,
     model: String,
     project_id: Option<String>,
 ) -> Result<Session> {
+    if project_id.is_none() {
+        remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
+    }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
@@ -676,10 +681,12 @@ async fn configure_session(
 }
 #[tauri::command]
 async fn set_reasoning_effort(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     reasoning_effort: Option<String>,
 ) -> Result<Session> {
+    remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"effort": reasoning_effort})).await?;
     // Match send/configure's lock order so a send cannot capture the old
     // configuration halfway through a settings change.
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
@@ -694,6 +701,7 @@ async fn set_reasoning_effort(
 }
 #[tauri::command]
 async fn update_session(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     title: Option<String>,
@@ -701,6 +709,10 @@ async fn update_session(
     model: Option<String>,
     mode: Option<String>,
 ) -> Result<()> {
+    // A mirror's permissions are its host's; the local row follows below.
+    if let Some(mode) = &mode {
+        remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"mode": mode})).await?;
+    }
     if let Some(title) = title
         .as_deref()
         .filter(|_| model.is_none() && mode.is_none() && archived.is_none())
@@ -1090,6 +1102,14 @@ async fn send_message(
             Some(project_id),
         )
         .await;
+    }
+    if remote::Mirror::is(&state, &session_id)? {
+        // Screenshots and images are files on this computer; the host cannot read them.
+        if image_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+            return Err("Images can't be sent to a task on another computer yet.".into());
+        }
+        remote::route(&app, &state, &session_id, "task.send", serde_json::json!({"text": text})).await?;
+        return Ok(());
     }
     launch_task_in_project(
         app,
@@ -1625,11 +1645,6 @@ async fn launch_operation_admitted(
                     if saved.is_ok() && e.kind == "approval" {
                         if let Some(request_id) = &e.request_id {
                             bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
-                            remote::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
-                        }
-                    } else if e.kind == "approval_cancelled" {
-                        if let Some(request_id) = &e.request_id {
-                            remote::approval_settled(&e.session_id, request_id);
                         }
                     }
                     saved
@@ -1682,7 +1697,7 @@ async fn launch_operation_admitted(
             ) {
                 architect::activity(&app_sink, &e.session_id, team_sink.as_ref());
             }
-            remote::task_changed(&app_sink, &e.session_id);
+            remote::agent_event(&app_sink, &e);
             // Cloned only for the turn boundary below.
             let completed = (e.kind == "turn_complete").then(|| e.session_id.clone());
             let _ = app_sink.emit("agent-event", e);
@@ -1881,22 +1896,15 @@ async fn launch_operation_admitted(
         if let Some(registry) = registry.as_mut() {
             registry.remove(&session_id);
         }
-        let _ = app.emit(
-            "agent-event",
-            event(
-                &session_id,
-                "done",
-                if was_stopped {
-                    "Turn stopped"
-                } else if successful {
-                    "Turn complete"
-                } else {
-                    "Turn failed"
-                },
-            ),
-        );
-        remote::run_finished(&session_id);
-        remote::task_changed(&app, &session_id);
+        let done = if was_stopped {
+            "Turn stopped"
+        } else if successful {
+            "Turn complete"
+        } else {
+            "Turn failed"
+        };
+        let _ = app.emit("agent-event", event(&session_id, "done", done));
+        remote::run_finished(&app, &session_id, successful, was_stopped, done);
         // Bot conversations reply on their channel and send their next queued message.
         if !was_stopped {
             bots::run_finished(&app, &session_id, successful);
@@ -1941,6 +1949,9 @@ async fn stop_session(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<()> {
+    if remote::mirror::stop(&app, &state, &session_id).await?.is_some() {
+        return Ok(());
+    }
     let is_team = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         architect::load(&store, &session_id)?.is_some()
@@ -1962,11 +1973,15 @@ async fn stop_session(
 }
 #[tauri::command]
 async fn respond_approval(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     request_id: String,
     approved: bool,
 ) -> Result<()> {
+    if remote::route(&app, &state, &session_id, "approval.respond", serde_json::json!({"requestId": request_id, "approve": approved})).await?.is_some() {
+        return Ok(());
+    }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     let tx = agents
         .get(&session_id)
@@ -1991,6 +2006,7 @@ async fn list_provider_models(provider: String, force: Option<bool>) -> Result<V
 
 #[tauri::command]
 async fn respond_user_input(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     request_id: String,
@@ -1998,6 +2014,9 @@ async fn respond_user_input(
 ) -> Result<()> {
     if response.to_string().len() > 32 * 1024 {
         return Err("Response is too large.".into());
+    }
+    if remote::route(&app, &state, &session_id, "input.respond", serde_json::json!({"requestId": request_id, "response": response})).await?.is_some() {
+        return Ok(());
     }
     let reply = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;
@@ -2226,6 +2245,9 @@ async fn attach_worktree(
 fn worktree_paths(store: &Arc<Mutex<Store>>, session_id: &str) -> Result<(PathBuf, PathBuf, Option<String>)> {
     let store = store.lock().map_err(|e| e.to_string())?;
     let task = store.session(session_id)?;
+    if let Some(device) = task.remote_device {
+        return Err(format!("This task runs on {}.", device.name));
+    }
     let worktree = task.worktree_path.ok_or("This task uses the main checkout.")?;
     let main = store.workspace_root(&task.project_id, None)?;
     Ok((main, PathBuf::from(worktree), task.worktree_branch))
@@ -2993,7 +3015,9 @@ pub fn run() {
                 remote::remote_devices,
                 remote::remote_revoke_device,
                 remote::remote_set_trusted,
-                remote::remote_call,
+                remote::remote_targets,
+                remote::mirror::remote_start_task,
+                remote::mirror::remote_repo_check,
                 provider_settings::provider_configuration,
                 agent_usage::agent_usage,
                 usage_ledger::usage_ledger,

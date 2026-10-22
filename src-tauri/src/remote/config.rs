@@ -5,8 +5,23 @@ use std::path::Path;
 
 /// Keychain service for the relay token and the device's X25519 private key.
 pub(crate) const SERVICE: &str = "app.pandacode.remote";
-pub(crate) const TOKEN_ACCOUNT: &str = "relay-token";
-pub(crate) const KEY_ACCOUNT: &str = "device-key";
+
+/// Keychain account names for one install, scoped by its data folder. A dev build and the
+/// installed app (each its own device) must not share one item: macOS ties an item to the
+/// signature that made it, so the other build was refused access (errSecAuthFailed, -25293),
+/// and one build's sign-in overwrote the other's token.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Accounts {
+    pub token: String,
+    pub key: String,
+}
+
+pub(crate) fn accounts(dir: &Path) -> Accounts {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(dir.to_string_lossy().as_bytes());
+    let id: String = digest[..6].iter().map(|byte| format!("{byte:02x}")).collect();
+    Accounts { token: format!("relay-token:{id}"), key: format!("device-key:{id}") }
+}
 const FILE: &str = "remote.json";
 
 /// The relay and GitHub OAuth app this build talks to. Missing either means "not configured".
@@ -87,22 +102,24 @@ pub(crate) fn save(dir: &Path, settings: &Settings) -> crate::Result<()> {
 
 /// The device key as stored: `Ok(None)` only when there is none. A keychain failure (a denied
 /// or dismissed prompt, a locked keychain) is an error, so the key is never replaced over it.
-pub(crate) fn read_key() -> crate::Result<Option<String>> {
+pub(crate) fn read_key(account: &str) -> crate::Result<Option<String>> {
     #[cfg(test)]
     {
-        Ok(crate::secret_store::get(SERVICE, KEY_ACCOUNT))
+        Ok(crate::secret_store::get(SERVICE, account))
     }
     #[cfg(all(not(test), target_os = "macos"))]
     {
-        match security_framework::passwords::get_generic_password(SERVICE, KEY_ACCOUNT) {
+        match security_framework::passwords::get_generic_password(SERVICE, account) {
             Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
             Err(error) if error.code() == -25300 => Ok(None),
+            // -25293 (auth failed) and -128 (cancelled): the access prompt was denied or dismissed.
+            Err(error) if matches!(error.code(), -25293 | -128) => Err("macOS did not let PandaCode read its Connect key. Choose Always Allow when Keychain asks, or sign out and sign in again.".into()),
             Err(error) => Err(format!("Could not read this computer's PandaCode Connect key from Keychain ({}).", error.code())),
         }
     }
     #[cfg(all(not(test), any(target_os = "linux", target_os = "windows")))]
     {
-        match keyring::Entry::new(SERVICE, KEY_ACCOUNT).and_then(|entry| entry.get_password()) {
+        match keyring::Entry::new(SERVICE, account).and_then(|entry| entry.get_password()) {
             Ok(text) => Ok(Some(text)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err("Could not read this computer's PandaCode Connect key from secure storage.".into()),
@@ -201,6 +218,15 @@ mod tests {
         assert!(!written.get());
         load_or_create_key(Ok(None), write).unwrap();
         assert!(written.get());
+    }
+
+    #[test]
+    fn keychain_accounts_are_scoped_per_install() {
+        let installed = accounts(Path::new("/Users/me/Library/Application Support/ai.pandacode.desktop"));
+        let dev = accounts(Path::new("/Users/me/Library/Application Support/ai.pandacode.dev"));
+        assert_ne!(installed, dev);
+        assert_eq!(installed, accounts(Path::new("/Users/me/Library/Application Support/ai.pandacode.desktop")));
+        assert!(installed.key.starts_with("device-key:") && installed.token.starts_with("relay-token:"));
     }
 
     #[test]

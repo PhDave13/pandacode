@@ -257,10 +257,17 @@ pub fn clone_destination(parent: &Path, repo: &str) -> Result<PathBuf, String> {
 
 pub fn clone(repo: &str, parent: &Path) -> Result<PathBuf, String> {
     let destination = clone_destination(parent, repo)?;
-    let repo = valid_repo(repo)?;
-    let target = destination.to_string_lossy().to_string();
-    run_gh(parent, &["repo", "clone", &repo, &target], CLONE_TIMEOUT)?;
+    clone_to(repo, &destination, CLONE_TIMEOUT)?;
     Ok(destination)
+}
+
+/// Clones `repo` into `destination`, whose parent must exist and which must not.
+pub fn clone_to(repo: &str, destination: &Path, timeout: Duration) -> Result<(), String> {
+    let repo = valid_repo(repo)?;
+    let parent = destination.parent().filter(|parent| parent.is_dir()).ok_or("Choose an existing folder to clone into.")?;
+    let target = destination.to_string_lossy().to_string();
+    run_gh(parent, &["repo", "clone", &repo, &target], timeout)?;
+    Ok(())
 }
 
 #[cfg(test)]

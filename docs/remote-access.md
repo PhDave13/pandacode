@@ -1,16 +1,45 @@
 # Remote access (PandaCode Connect)
 
-Opt-in. Off by default. Signing in lets one PandaCode window see and drive the tasks on the
-user's other computers that are signed in to the same account and have **Allow remote control
-of this computer** turned on. Nothing is sent anywhere until the user signs in.
+Opt-in. Off by default. Signing in lets a task *run on another computer*: one of the user's
+computers signed in to the same account, trusted, with **Allow remote control of this computer**
+turned on. The task stays an ordinary task in the local sidebar and conversation pane, with the
+same streaming, composer, approvals and model picker as a local one; there is no separate remote
+view. Nothing is sent anywhere until the user signs in.
 
 ## Pieces
 
 | Piece | Where | Job |
 |---|---|---|
 | Relay | `relay/` (Cloudflare Worker + one Durable Object per account) | Sign-in, device list, forwards encrypted frames between an account's devices. Stores no task content. |
-| Native | `src-tauri/src/remote/` | Sign-in, keys in the OS keychain, one WebSocket to the relay, host RPC, client calls. |
-| UI | `src/remote*.ts`, `src/remote.css` | Settings → Remote access, sidebar **Computers**, the remote task view. |
+| Native | `src-tauri/src/remote/` | Sign-in, keys in the OS keychain, one WebSocket to the relay, host RPC (`host.rs`, `start.rs`), mirrors (`mirror.rs`), client calls. |
+| UI | `src/remote*.ts`, `src/remote-settings.css` | Settings → Remote access, and choosing where a new task runs. |
+
+## Mirrors
+
+A task started on host H is a normal local session row (a *mirror*) with three extra columns
+(schema version 26): `remote_device` (H's device id), `remote_session` (H's session id, null
+while H is still starting it) and `remote_synced_id` (the last of H's message ids copied here).
+
+- `get_messages` reads local rows. Messages are copied from H after each run end, and when a
+  subscription shows H has newer ones.
+- `send_message`, `stop_session`, `respond_approval`, `respond_user_input`, `steer_task`,
+  `configure_session` (model), `set_reasoning_effort` and `update_session` (mode, so
+  permissions change on H) go to H natively, with H's session id.
+  A prompt marks the mirror running before H answers (and restores the status if H refuses).
+  Images can't be sent to a mirror yet: they are files on this computer.
+- Stopping a mirror whose host is offline (the relay reports it undeliverable, or presence
+  shows it offline) ends the local turn as stopped, so the spinner clears. A run end is applied
+  once: a mirror that is no longer running or waiting is never ended again.
+- The queue stays on this computer: the window delivers the next entry with `send_message` at
+  the run end, as for any task, so it reaches H. (Routing the queue to H as well would let both
+  windows deliver the same entry.)
+- `list_sessions` (and every `Session`) carries `remoteDevice: { id, name }`. The name comes
+  from presence ("another computer" until presence names it).
+- Running state is the row's status, set from H's events, so the sidebar and composer show it
+  as for a local run. A mirror is never reset to interrupted because no local agent runs it.
+- Anything that needs the checkout (git, worktree and diff commands, file reads, launching an
+  agent) goes through `Store::workspace_root`, which refuses a mirror with
+  `This task runs on <name>.` and never touches the local disk.
 
 ## Accounts
 
@@ -21,7 +50,7 @@ Sign in with GitHub using the OAuth **device flow** (no client secret anywhere):
 3. Desktop → relay `POST /v1/auth/github` `{ githubToken, device: { id, name, platform, publicKey } }`.
    The relay calls `GET https://api.github.com/user` and gets the numeric id, login and avatar_url. It
    registers the device and returns `{ token, account: { id: "gh:<id>", login, avatarUrl } }`.
-4. The desktop stores only the relay token in the keychain (`app.pandacode.remote`). It discards the GitHub token.
+4. The desktop stores only the relay token in the keychain (`app.pandacode.remote`, with account names scoped to the install's data folder, so a dev build and the installed app never share an item). It discards the GitHub token.
 
 The device key is made once, at sign-in, behind a lock (so two sign-ins cannot race) and before
 polling starts. A keychain *error* (a denied prompt, a locked keychain) fails sign-in; only a
@@ -66,6 +95,8 @@ only that pending call; without one it fails every pending call to `to`.
 Relay → client:
 - `{ kind: "presence", devices: [{ id, name, platform, publicKey, host, online, lastSeen }] }`, the
   account's full device rows, sent on connect and on every join, leave or device change.
+  Each presence frame makes the viewer subscribe again to the hosts it mirrors (a host that
+  restarted has forgotten its subscribers).
 - `{ kind: "undeliverable", ... }` (above)
 - `{ kind: "error", error }`
 
@@ -90,7 +121,7 @@ sockets cost no duration. Device rows live in the Durable Object's SQLite storag
 |---|---|---|
 | Devices per account | 10 | Fits personal use. Stops abuse. |
 | Sockets per device | 1 | A new socket closes the old one. |
-| Frame size | 256 KiB | Large transcripts are paged (see `task.get`). |
+| Frame size | 256 KiB | Message pages and event frames are capped at 180 KiB of JSON. |
 | Frame rate per socket | 20/s sustained, burst 100 | Token bucket. Over the limit → `error` and drop. |
 | Auth calls | 10/min per IP | Workers rate-limit binding |
 | Idle socket | kept (hibernated). The client pings every 30 s. | |
@@ -143,35 +174,77 @@ more power than local ones.
 
 | Method | Params | Result |
 |---|---|---|
-| `subscribe` | `{ sessionId? }` | `{}`. The host sends `tasks.changed` events to this device for 10 minutes; the client re-subscribes. `sessionId` is the task the viewer has open (its focus); omitting it clears the focus. |
-| `tasks.list` | `{}` | overlay `Snapshot` (`overlay.rs`) |
-| `task.get` | `{ sessionId, historyVersion?, beforeId? }` | overlay `ThreadSnapshot` (`messages, hasOlder, liveText, status, provider, historyVersion, historyUnchanged`) plus `approvals: [{ requestId, title?, detail? }]` |
-| `task.start` | `{ projectId?, text }` | `{ sessionId }` (like `overlay_launch`) |
+| `subscribe` | `{ sessionIds: [...] }` (≤ 500) | `{ tasks: [{ sessionId, status, lastId, title }] }` for those that exist. Adds the ids to this device's subscription for 10 minutes; the viewer renews every 9 minutes and on every presence frame. An expired subscription starts over. |
+| `task.start` | `{ repo: "owner/name", branch?, worktree, prompt, provider, model, mode?, effort? }` | `{ sessionId }` |
+| `task.messages` | `{ sessionId, afterId }` | `{ messages: [{ id, role, content, createdAt, turnDurationMs }], hasMore, title }` |
 | `task.send` | `{ sessionId, text }` | `{ queued: boolean }`. Queued if the task is running, like Enter. If the run ended between the check and the queue add, the host takes the entry back and sends it. |
 | `task.stop` | `{ sessionId }` | `{}` |
+| `task.steer` | `{ sessionId, text }` | `{}` (as `steer_task`) |
+| `task.configure` | `{ sessionId, provider?, model?, effort?, mode? }` | `{}`. `provider` and `model` together; `effort: null` clears it; `mode` changes permissions. |
 | `approval.respond` | `{ sessionId, requestId, approve: boolean }` | `{}` |
+| `input.respond` | `{ sessionId, requestId, response }` | `{}` (as `respond_user_input`) |
 
-`historyVersion` is per task: the host hashes the task's max message id, message count and total
-content length (kept under 2^53 so JavaScript reads it exactly), so other tasks' writes never
-change it. `task.get` without `beforeId` and with the current `historyVersion` returns
-`historyUnchanged: true`, `messages: []` and `hasOlder: false`, with the live state only.
+A host refuses a session id that is itself a mirror, so tasks never hop twice.
 
-Pages are capped so the sealed frame stays under 256 KiB: the reply's JSON is kept within 180 KiB.
-`liveText` keeps its last 32 KiB. Any message over 120 KiB is cut and ends with
+### Starting a task on another computer
+
+`task.start` on the host:
+
+1. Refuses a provider that isn't installed there: `<Provider> is not installed on <host>.`
+2. Finds a project whose `origin` is that GitHub repository (as `github_project_repos`, case
+   insensitive). With none, it clones it with `gh` (as `github_clone_repo`, at most 6 minutes)
+   into `~/PandaCode/<name>`, or `<name>-2`, `-3`… when taken, and adds the project.
+3. Fetches `origin` (at most 90 s), then uses the viewer's branch if origin has it, otherwise
+   origin's default branch. With a worktree it creates `pandacode/remote-<id>` from
+   `origin/<branch>` the normal way. Without one, a fresh clone is checked out on that branch;
+   an existing checkout is never switched: it runs in place only when it is clean, has no local
+   agent running in it and is already on that branch (then it is fast-forwarded to origin when
+   it can be). Otherwise the start is refused, for example `<host> has uncommitted changes in
+   <project>. Start it in a Worktree instead.` (or `… has an agent working in …`, `… has
+   <project> on <branch>, not <branch>.`).
+4. Creates the task with the provider, model, mode and effort, adds it to the caller's
+   subscription, and sends the prompt.
+
+The host's worst case is about 9.5 minutes (clone, fetch and local git steps, each capped); the
+viewer waits 3 minutes longer. A `task.start` runs beside the peer's ordered request queue (at
+most 4 at once, then it queues), so a slow clone never delays that peer's other requests, which
+stay in order.
+
+### Events
+
+Push only; nothing polls. The host buffers the agent events of each subscriber's tasks and sends
+each subscriber at most one `agent.events { events: [...] }` frame every 100 ms (more only when
+the events pass the 180 KiB frame budget; an event over 120 KiB is cut). Consecutive text deltas
+of the same message are merged, so streaming costs at most 10 frames a second per subscriber,
+whatever the token rate. A subscriber more than 4096 events behind stops buffering until it
+catches up at the run end. Each event is the host's raw `AgentEvent` (`sessionId`, `kind`, `text`,
+`requestId`, `data`, `tool`), approval ids included.
+
+At a run end the host queues `run.finished { sessionId, successful, stopped, text }` after that
+run's last events. The viewer copies the new messages, ends the local turn, then emits the
+`done` agent event with `text`, so the transcript reloads with everything in it.
+
+The viewer re-emits each event as the window's ordinary `agent-event` with the mirror's *local*
+session id (events for tasks it doesn't mirror from that host are dropped), and moves the row's
+status (`approval`/`input_request` → waiting, their cancellations → running, any other event
+→ running). A subscription reply catches up on what was missed: a status that changed, a run
+that ended while this computer wasn't listening, and messages newer than `remote_synced_id`.
+
+### Message copies
+
+`task.messages` returns the messages after `afterId`, oldest first: at most 400 rows, kept
+within 180 KiB of JSON, `hasMore` when more remain. Any message over 120 KiB is cut and ends with
 `…[cut on the host to fit a remote page]` (JSON tool content is cut inside, so it still parses).
-The oldest messages that do not fit are dropped from the page and `hasOlder` is set; the viewer
-pages back with `beforeId` = the oldest id it has.
+The viewer stores a page and advances `remote_synced_id` in one transaction, and skips a page
+that no longer starts at the stored position (a concurrent copy got there first), so messages
+are never copied twice. It follows `hasMore` for up to 50 pages per copy, and also takes the
+host's title.
 
-Event `tasks.changed { sessionIds: [...], focus?: { sessionId, liveText, status, historyVersion } }`:
-the host batches changed tasks and sends each subscriber at most one event every 250 ms, with up
-to 500 ids per event. `focus` is included when the subscriber's focused task is among the changed
-ids (`liveText` is its last 32 KiB). The viewer emits one `remote://task-changed` window event per
-id, and `live` only for the focused one, so streaming text needs no `task.get` until
-`historyVersion` changes. Streaming therefore costs at most 4 event frames a second per
-subscriber, however many tasks run and whatever the token rate.
+Known limit: a message the host rewrites in place after it was copied (a tool's status, say)
+is not copied again.
 
 Responses and events are handled as soon as they arrive and never wait behind a slow request.
-Requests from one peer are answered in order.
+Requests from one peer are answered in order, except `task.start` (above).
 
 ## Tauri commands (UI contract)
 
@@ -186,14 +259,15 @@ Requests from one peer are answered in order.
 | `remote_devices` | | `[{ id, name, platform, fingerprint, host, online, lastSeen, current, trusted }]`, from presence (fetched only before the first presence frame) |
 | `remote_set_trusted` | `{ deviceId, trusted }` | the `remote_devices` list. Pins the device's current key for both directions, or removes the pin. |
 | `remote_revoke_device` | `{ deviceId }` | `{}` |
-| `remote_call` | `{ deviceId, method, params }` | result. Rejects if the host isn't trusted here, with the host's error, when undeliverable, or after a 20 s timeout. |
+| `remote_targets` | | `[{ deviceId, name, platform, online }]`: other devices trusted here (so, symmetrically, trusting this one) with hosting on |
+| `remote_repo_check` | `{ projectId }` | `{ repo: "owner/name" \| null, branch, ahead, dirty, pushed }`. `repo` is null without a GitHub `origin`; `ahead` is `rev-list --count @{u}..HEAD` (0 without an upstream); `pushed` is whether `origin/<branch>` exists. Local refs only, no network. |
+| `remote_start_task` | `{ deviceId, projectId, prompt, provider, model, mode?, effort?, worktree?, branch?, sessionId? }` | the mirror `Session` plus `sessionId`. `branch` defaults to the checkout's. An empty New task draft without its own worktree passed as `sessionId` becomes the mirror; otherwise a new task is made. On failure nothing is left: a new row is deleted, a draft stays a draft. |
 
-Window events: `remote://status` (status), `remote://presence` (devices), and
-`remote://task-changed` `{ deviceId, sessionId, live?: { liveText, status, historyVersion } }`
-(`live` only for the subscriber's focused task).
+Window events: `remote://status` (status), `remote://presence` (devices), and for mirrors the
+ordinary `agent-event` and `sessions-changed`.
 
 The agent-event hook in `lib.rs` clones and allocates nothing while hosting is off or nobody
-subscribes.
+mirrors that task.
 
 ## Privacy
 

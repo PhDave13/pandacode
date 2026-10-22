@@ -16,6 +16,13 @@
 .branch-chip[aria-expanded="true"]{background:#fff1b9;box-shadow:inset 0 0 0 1px rgb(177 132 16 / .13)}
 .branch-chip:not(:disabled):active{background:color-mix(in srgb,var(--accent) 52%,var(--bg))}
 .branch-chip-missing{color:var(--danger)}
+.branch-chip-fixed{cursor:default}
+/* The computer a task runs on (PandaCode Connect); fixed once the task has started. */
+.composer-computer{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:30%;padding:5px 8px;border-radius:3px;color:var(--text);font-weight:500;font-size:inherit}
+.composer-computer>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.composer-computer>.icon{width:14px;height:14px;color:var(--muted);flex-shrink:0}
+.composer-computer:not(.composer-computer-fixed):hover{background:var(--raised)}
+.composer-computer-fixed{cursor:default}
 .branch-chip-missing>.icon:first-child{color:var(--danger)}
 html[data-theme="dark"] .branch-chip[aria-expanded="true"]{background:var(--accent-dim);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .14)}
 html[data-theme="dark"] .branch-chip:not(:disabled):active{background:#5b4b20}

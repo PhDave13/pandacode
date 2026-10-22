@@ -1,4 +1,4 @@
-//! Calls from this window to a task host on another computer.
+//! Calls from this computer to a task host on another computer.
 use super::{remote, socket};
 use crate::Result;
 use serde_json::{json, Value};
@@ -8,6 +8,10 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PARAMS: usize = 110 * 1024;
 
 pub(crate) async fn call(app: &tauri::AppHandle, device_id: &str, method: &str, params: Value) -> Result<Value> {
+    call_within(app, device_id, method, params, TIMEOUT).await
+}
+
+pub(crate) async fn call_within(app: &tauri::AppHandle, device_id: &str, method: &str, params: Value, timeout: Duration) -> Result<Value> {
     if !super::host::METHODS.contains(&method) {
         return Err("Unknown remote method.".into());
     }
@@ -35,7 +39,7 @@ pub(crate) async fn call(app: &tauri::AppHandle, device_id: &str, method: &str, 
         forget();
         return Err(error);
     }
-    match tokio::time::timeout(TIMEOUT, answer).await {
+    match tokio::time::timeout(timeout, answer).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err("The connection to the relay was lost.".into()),
         Err(_) => {

@@ -31,6 +31,8 @@ export type WorktreeHost = {
   archive(session: Session): Promise<void>;
   /** Extra menu rows from integrations, with their own handler. */
   extraItems(session: Session): ChoiceItem[];
+  /** The computer control (PandaCode Connect) for the context bar; empty when there is none. */
+  computer(session: Session, fresh: boolean): string;
   onExtra(id: string, session: Session, anchor: HTMLElement): Promise<void> | void;
 };
 export type CleanupIntent = 'archive' | 'complete' | 'remove';
@@ -70,15 +72,18 @@ export function createWorktrees(host: WorktreeHost) {
     const projectControl = fresh
       ? `<button type="button" id="composer-project" class="composer-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project?.path)}" ${session.worktreePath ? 'disabled' : ''}>${icon('folder')}<span>${escape(project?.name)}</span>${icon('down')}</button>`
       : `<span class="composer-project composer-project-fixed" title="${escape(project?.path)}">${icon('folder')}<span>${escape(project?.name)}</span></span>`;
-    const chip = git?.isRepo || session.worktreePath
+    // A task on another computer has its checkout there: name the branch, offer no local actions.
+    const chip = session.remoteDevice
+      ? `<span class="branch-chip branch-chip-fixed" title="Branch actions run on ${escape(session.remoteDevice.name)}, not here.">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(session.worktreeBranch || 'Remote checkout')}</span></span>`
+      : git?.isRepo || session.worktreePath
       ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" title="${escape(path)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? 'Worktree missing' : branch || 'Detached HEAD')}</span>${icon('down')}</button>`
       : '';
     const links = [session.issue, session.pullRequest].filter(Boolean).map(link => linkChip(link!, session.id)).join('');
-    return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${projectControl}<span class="composer-local" title="${escape(path)}">${icon(session.worktreePath ? 'worktree' : 'terminal')}${checkoutLabel(session)}</span>${chip}${links}</div>`;
+    return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${projectControl}${host.computer(session, fresh)}<span class="composer-local" title="${escape(path)}">${icon(session.worktreePath ? 'worktree' : 'terminal')}${checkoutLabel(session)}</span>${chip}${links}</div>`;
   }
 
   async function showMenu(anchor: HTMLElement): Promise<void> {
-    const session = host.session(); if (!session) return;
+    const session = host.session(); if (!session || session.remoteDevice) return;
     const project = host.project(), git = host.git(), missing = worktreeMissing(session, host.gitError());
     const path = session.worktreePath ?? project?.path ?? '';
     const branch = missing ? session.worktreeBranch || 'unknown branch' : git?.branch || session.worktreeBranch || 'Detached HEAD';

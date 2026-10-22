@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /* PandaCode Connect on the preview's sample account (src/preview-remote.ts): sign in, allow
- * remote control, see another computer appear, open one of its tasks and message it. */
+ * remote control, then start a new task on another computer from the context bar. */
 async function openRemoteSettings(page: Page) {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
@@ -12,7 +12,7 @@ async function openRemoteSettings(page: Page) {
 
 test('signs in with a device code, toggles remote control and lists devices', async ({ page }) => {
   const panel = await openRemoteSettings(page);
-  await expect(page.locator('.sidebar-computers')).toBeHidden();
+  await expect(page.locator('#composer-computer')).toHaveCount(0);
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByLabel('Device code')).toHaveText('WDJB-MJHT');
   await expect(panel.getByRole('button', { name: 'Copy code' })).toBeVisible();
@@ -49,102 +49,98 @@ test('signs in with a device code, toggles remote control and lists devices', as
   await expect(panel.getByRole('button', { name: 'Sign in with GitHub' })).toBeVisible();
 });
 
-test('a signed-in computer appears in the sidebar; open a task and send a message', async ({ page }) => {
+async function signedInNewTask(page: Page) {
   const panel = await openRemoteSettings(page);
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByRole('button', { name: 'Sign out' })).toBeVisible();
   await page.getByRole('button', { name: /^back/i }).click();
-
-  const computer = page.locator('.sidebar-computers').getByRole('button', { name: 'Studio iMac' });
-  await expect(computer).toBeVisible();
-  await expect(page.locator('.sidebar-computers')).not.toContainText('Old laptop');
+  await page.locator('.new-task-button').click();
+  return page.locator('#composer-computer');
+}
+async function chooseStudio(page: Page) {
+  const computer = page.locator('#composer-computer');
   await computer.click();
-
-  const view = page.getByRole('region', { name: 'Remote computer' });
-  await view.getByRole('button', { name: /Fix the flaky export test/ }).click();
-  await expect(view.getByRole('log', { name: 'Conversation' })).toContainText('The test races the file watcher');
-  await expect(view.locator('strong', { hasText: 'added a wait' })).toBeVisible();
-
-  await view.getByRole('textbox', { name: 'Message' }).fill('Thanks, now run the whole suite');
-  await view.getByRole('button', { name: 'Send' }).click();
-  await expect(view.getByRole('log', { name: 'Conversation' })).toContainText('Thanks, now run the whole suite');
-  await expect(view.getByRole('log', { name: 'Conversation' })).toContainText('Done: Thanks, now run the whole suite');
-
-  await view.getByRole('button', { name: 'New task' }).click();
-  await view.getByRole('textbox', { name: 'New task prompt' }).fill('Update the changelog');
-  await view.getByRole('button', { name: 'Start task' }).click();
-  await expect(view.getByRole('button', { name: /Update the changelog/ })).toBeVisible();
-});
-
-test('an untrusted computer shows a named empty state, and host text cannot inject markup', async ({ page }) => {
-  const panel = await openRemoteSettings(page);
-  await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
-  await expect(panel.getByRole('button', { name: 'Sign out' })).toBeVisible();
-  await page.getByRole('button', { name: /^back/i }).click();
-
-  await page.locator('.sidebar-computers').getByRole('button', { name: 'Home NAS' }).click();
-  const view = page.getByRole('region', { name: 'Remote computer' });
-  await expect(view.getByRole('alert')).toContainText('This computer doesn’t trust Home NAS yet');
-  await expect(view.getByRole('alert')).toContainText('Both computers must trust each other');
-  await expect(page.locator('#toast')).toBeHidden();
-
-  await page.getByRole('button', { name: 'Conversation view' }).click();
-  await page.locator('.sidebar-computers').getByRole('button', { name: 'Studio iMac' }).click();
-  await view.getByRole('button', { name: /Write release notes/ }).click();
-  await expect(view.getByRole('log', { name: 'Conversation' })).toContainText('plain text');
-  await expect(view.locator('.remote-msg img')).toHaveCount(0);
-  await expect(view.locator('.remote-msg')).toHaveCount(1);
-  expect(await page.evaluate(() => (window as any).__xss)).toBeUndefined();
-});
-
-async function signedInView(page: Page) {
-  const panel = await openRemoteSettings(page);
-  await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
-  await expect(panel.getByRole('button', { name: 'Sign out' })).toBeVisible();
-  await page.getByRole('button', { name: /^back/i }).click();
-  await page.locator('.sidebar-computers').getByRole('button', { name: 'Studio iMac' }).click();
-  return page.getByRole('region', { name: 'Remote computer' });
+  await page.getByRole('menuitemradio', { name: 'Studio iMac' }).click();
+  await expect(computer).toHaveAccessibleName('Computer: Studio iMac');
 }
 
-test('streamed text updates from the live delta without fetching history', async ({ page }) => {
-  const view = await signedInView(page);
-  await view.getByRole('button', { name: /Fix the flaky export test/ }).click();
-  await expect(view.getByRole('log', { name: 'Conversation' })).toContainText('The test races the file watcher');
-  await view.getByRole('button', { name: 'Load earlier' }).click();
-  await expect(view.getByRole('log', { name: 'Conversation' })).toContainText('Earlier: the export test is flaky.');
-  await expect(view.getByRole('button', { name: 'Load earlier' })).toHaveCount(0);
-  await view.getByRole('textbox', { name: 'Message' }).fill('go');
-  await view.getByRole('button', { name: 'Send' }).click();
-  const log = view.getByRole('log', { name: 'Conversation' });
-  await expect(log).toContainText('Working on it');
-  const gets = await page.evaluate(() => (window as any).__remoteGets);
-  await expect(log).toContainText('almost there');
-  expect(await page.evaluate(() => (window as any).__remoteGets)).toBe(gets);
-  await expect(log).toContainText('Done: go');
+test('the computer choice appears once signed in, one row per computer', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('#composer-computer')).toHaveCount(0);
+  const computer = await signedInNewTask(page);
+  await expect(computer).toHaveAccessibleName('Computer: This computer');
+  await computer.click();
+  const menu = page.getByRole('menu', { name: 'Run on' });
+  await expect(menu.getByRole('menuitemradio', { name: 'This computer' })).toHaveAttribute('aria-checked', 'true');
+  await expect(menu.getByRole('menuitemradio', { name: 'Studio iMac' })).toBeEnabled();
+  await expect(menu.getByRole('menuitemradio', { name: 'Old laptop' })).toBeDisabled();
+  // Untrusted computers are not targets.
+  await expect(menu.getByRole('menuitemradio', { name: 'Home NAS' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  // Local / Worktree still shows beside it.
+  await expect(page.locator('#composer-area .composer-local')).toHaveText('Local');
 });
 
-test('fast task switching never strands the new task on Loading', async ({ page }) => {
-  const view = await signedInView(page);
-  await view.getByRole('button', { name: /Write release notes/ }).click(); // answers after 300 ms
-  await view.getByRole('button', { name: /Fix the flaky export test/ }).click();
-  const log = view.getByRole('log', { name: 'Conversation' });
-  await expect(log).toContainText('The test races the file watcher');
-  await page.waitForTimeout(500);
-  await expect(log).toContainText('The test races the file watcher');
-  await expect(log).not.toContainText('Loading conversation');
+test('a new task starts on another computer and is an ordinary task with a locked computer', async ({ page }) => {
+  await signedInNewTask(page);
+  await chooseStudio(page);
+  await page.getByRole('textbox', { name: 'Message your coding agent' }).fill('Run the slow suite over there');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  const log = page.getByRole('log', { name: 'Conversation' });
+  await expect(log).toContainText('Run the slow suite over there');
+  await expect(page.locator('#navigation .task-item.selected')).toContainText('Run the slow suite over there');
+  const started = await page.evaluate(() => (window as any).__remoteStarts);
+  expect(started).toHaveLength(1);
+  expect(started[0]).toMatchObject({ deviceId: 'dev-studio', projectId: 'project-1', prompt: 'Run the slow suite over there', worktree: false, branch: 'feat/instant-search' });
+  expect(started[0].provider).toBeTruthy();
+
+  // Started tasks show their computer, fixed, and no local branch or change actions.
+  const locked = page.locator('#composer-area .composer-computer-fixed');
+  await expect(locked).toHaveText('on Studio iMac');
+  await expect(page.locator('#composer-computer')).toHaveCount(0);
+  await expect(page.locator('#composer-area [data-action="branch-menu"]')).toHaveCount(0);
+  await expect(page.locator('#composer-area .branch-chip-fixed')).toBeVisible();
+  await expect(page.locator('#inspector-content')).toContainText('Runs on Studio iMac');
+  await expect(page.locator('#commit-form')).toHaveCount(0);
+  // The composer stays the ordinary one.
+  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeVisible();
 });
 
-test('an offline computer shows a banner and keeps the draft', async ({ page }) => {
-  const view = await signedInView(page);
-  await view.getByRole('button', { name: /Fix the flaky export test/ }).click();
-  const box = view.getByRole('textbox', { name: 'Message' });
-  await box.fill('half-written thought');
-  await page.evaluate(() => (window as any).__remoteOnline('dev-studio', false));
-  await expect(view.getByText(/Studio iMac is offline/)).toBeVisible();
-  await expect(view.getByRole('log', { name: 'Conversation' })).toContainText('The test races the file watcher');
-  await expect(box).toHaveValue('half-written thought');
-  await page.evaluate(() => (window as any).__remoteOnline('dev-studio', true));
-  await expect(view.getByText(/Studio iMac is offline/)).toHaveCount(0);
+test('GitHub behind this computer asks first: Cancel keeps the draft, Continue starts', async ({ page }) => {
+  await page.addInitScript(() => { (window as any).__remoteBehind = { ahead: 2, dirty: true }; });
+  await signedInNewTask(page);
+  await chooseStudio(page);
+  const prompt = page.getByRole('textbox', { name: 'Message your coding agent' });
+  await prompt.fill('Ship the fix');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  const dialog = page.getByRole('dialog', { name: 'GitHub is behind this computer' });
+  await expect(dialog).toContainText('2 unpushed commits, uncommitted changes');
+  await expect(dialog).toContainText('Studio iMac will start from GitHub’s feat/instant-search');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(prompt).toHaveValue('Ship the fix');
+  expect(await page.evaluate(() => (window as any).__remoteStarts)).toBeUndefined();
+
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await dialog.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('log', { name: 'Conversation' })).toContainText('Ship the fix');
+  await expect(page.locator('#composer-area .composer-computer-fixed')).toHaveText('on Studio iMac');
+  expect(await page.evaluate(() => (window as any).__remoteStarts.length)).toBe(1);
+});
+
+test('a project without a GitHub remote cannot start on another computer', async ({ page }) => {
+  await signedInNewTask(page);
+  await page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Choose project', exact: true }).getByRole('option', { name: /^pandacode — / }).click();
+  await chooseStudio(page);
+  const prompt = page.getByRole('textbox', { name: 'Message your coding agent' });
+  await prompt.fill('Try it there');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.locator('#toast')).toContainText('pandacode has no GitHub remote, so it can’t run on another computer.');
+  await expect(prompt).toHaveValue('Try it there');
+  expect(await page.evaluate(() => (window as any).__remoteStarts)).toBeUndefined();
 });
 
 test('sign-in can be cancelled', async ({ page }) => {

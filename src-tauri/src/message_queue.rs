@@ -192,10 +192,14 @@ pub async fn queue_restore(state: State<'_, AppState>, entry: QueuedMessage) -> 
 /// Sends a message into the running turn. On success it is saved to the transcript;
 /// a harness that cannot steer returns an error and the message should stay queued.
 #[tauri::command]
-pub async fn steer_task(state: State<'_, AppState>, session_id: String, text: String) -> Result<()> {
+pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, text: String) -> Result<()> {
     let text = text.trim().to_owned();
     if text.is_empty() {
         return Err("Write a message to steer with.".into());
+    }
+    // A task on another computer steers there and saves the message in its own history.
+    if crate::remote::route(&app, &state, &session_id, "task.steer", serde_json::json!({"text": text})).await?.is_some() {
+        return Ok(());
     }
     let reply = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;

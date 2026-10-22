@@ -558,6 +558,23 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     invoke, emit,
     addProject: name => { const p = { id: crypto.randomUUID(), name, path: `/Users/you/PandaCode Bots/${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}` }; projects.push(p); return p; },
   });
+  if (command === 'remote_repo_check') {
+    // `window.__remoteBehind` lets tests make GitHub lag this computer.
+    const repo = previewGithub.status(args.projectId).repo, behind = (window as any).__remoteBehind ?? {};
+    return { repo: repo?.nameWithOwner ?? null, branch: git.branch, ahead: behind.ahead ?? 0, dirty: behind.dirty ?? false, pushed: behind.pushed ?? true } as T;
+  }
+  if (command === 'remote_start_task') {
+    // The task runs on the other computer; here it is an ordinary session that names it.
+    const targets = await invokeRemote<{ deviceId: string; name: string; online: boolean }[]>('remote_targets', {}, emit);
+    const target = targets.find(item => item.deviceId === args.deviceId && item.online);
+    if (!target) throw new Error('That computer is offline.');
+    ((window as any).__remoteStarts ??= []).push(args);
+    const s = args.sessionId ? session(args.sessionId) : await invoke<Session>('create_session', { projectId: args.projectId, provider: args.provider, model: args.model, mode: args.mode });
+    Object.assign(session(s.id), { projectId: args.projectId, provider: args.provider, model: args.model, mode: args.mode, reasoningEffort: args.effort, remoteDevice: { id: target.deviceId, name: target.name }, worktreeBranch: args.branch });
+    await invoke('send_message', { sessionId: s.id, text: args.prompt });
+    emit('sessions-changed', {});
+    return { sessionId: s.id } as T;
+  }
   if (command.startsWith('remote_')) return invokeRemote<T>(command, args, emit);
   let result: unknown;
   switch (command) {

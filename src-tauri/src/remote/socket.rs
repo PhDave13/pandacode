@@ -1,6 +1,6 @@
 //! The one WebSocket to the relay: reconnects with backoff, pings, tracks presence,
 //! and seals and opens every frame between this computer and the others.
-use super::{auth, config, crypto, emit_presence, emit_status, host, remote, sign_out_local, Device, Inner};
+use super::{auth, config, crypto, emit_presence, emit_status, host, mirror, remote, sign_out_local, Device, Inner};
 use crate::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -10,6 +10,10 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, Message};
 
 const PING: Duration = Duration::from_secs(30);
+/// The error a call gets when the relay can't deliver it to an offline computer.
+pub(crate) const OFFLINE: &str = "That computer is offline.";
+/// Hosts keep a subscription for 10 minutes; it is renewed before then.
+const RENEW: Duration = Duration::from_secs(9 * 60);
 const SILENT: Duration = Duration::from_secs(75);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// A socket must stay up this long before the backoff resets.
@@ -126,6 +130,8 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
     // One ordered request queue per peer; dropping the map at the end stops their workers.
     let mut peers: HashMap<String, mpsc::Sender<Request>> = HashMap::new();
     let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING, PING);
+    // The first subscription follows the first presence frame.
+    let mut renew = tokio::time::interval_at(tokio::time::Instant::now() + RENEW, RENEW);
     let mut heard = Instant::now();
     loop {
         tokio::select! {
@@ -137,6 +143,9 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
                     return closed(None);
                 }
             },
+            _ = renew.tick() => {
+                tauri::async_runtime::spawn(mirror::subscribe_all(app.clone()));
+            }
             _ = ping.tick() => {
                 if heard.elapsed() > SILENT || write.send(Message::text("ping")).await.is_err() {
                     return closed(None);
@@ -169,7 +178,7 @@ fn frame(app: &tauri::AppHandle, text: &str, peers: &mut HashMap<String, mpsc::S
         Some("presence") => presence(app, &value["devices"]),
         Some("undeliverable") => {
             if let Some(to) = value["to"].as_str() {
-                let error = if value["reason"] == "rate" { "Too many requests to that computer. Try again in a moment." } else { "That computer is offline." };
+                let error = if value["reason"] == "rate" { "Too many requests to that computer. Try again in a moment." } else { OFFLINE };
                 remote(app).lock().fail_ref(to, value["ref"].as_str(), error);
             }
         }
@@ -188,21 +197,40 @@ fn frame(app: &tauri::AppHandle, text: &str, peers: &mut HashMap<String, mpsc::S
             let Ok(message) = serde_json::from_slice::<Value>(&plain) else { return };
             match message["type"].as_str() {
                 Some("req") => queue(app, from, (message, key, trusted), peers),
-                // Only a host trusted here may answer or report changes.
+                // Only a host trusted here may answer or send its tasks' events.
                 Some("res") if trusted => super::client::resolve(app, from, &message),
-                Some("event") if trusted && message["name"] == "tasks.changed" => {
-                    use tauri::Emitter;
-                    for event in task_changes(from, &message["data"]) {
-                        let _ = app.emit("remote://task-changed", event);
-                    }
-                }
+                Some("event") if trusted => match message["name"].as_str() {
+                    Some("agent.events") => mirror::events(app, from, &message["data"]),
+                    Some("run.finished") => mirror::finished(app, from, &message["data"]),
+                    _ => {}
+                },
                 _ => {}
             }
         }
     }
 }
 
+/// `task.start` runs beside the peer's queue, so a slow clone never holds up its other
+/// requests (which stay in order); at most [`MAX_STARTS`] at once, then it queues too.
+fn runs_apart(message: &Value) -> bool {
+    message["method"] == "task.start"
+}
+
+const MAX_STARTS: usize = 4;
+static STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 fn queue(app: &tauri::AppHandle, from: &str, request: Request, peers: &mut HashMap<String, mpsc::Sender<Request>>) {
+    use std::sync::atomic::Ordering;
+    if runs_apart(&request.0) && STARTS.fetch_add(1, Ordering::AcqRel) < MAX_STARTS {
+        let (app, from) = (app.clone(), from.to_owned());
+        tauri::async_runtime::spawn(async move {
+            answer(&app, &from, request).await;
+            STARTS.fetch_sub(1, Ordering::AcqRel);
+        });
+        return;
+    } else if runs_apart(&request.0) {
+        STARTS.fetch_sub(1, Ordering::AcqRel);
+    }
     if !peers.contains_key(from) {
         if peers.len() >= MAX_PEERS {
             return;
@@ -218,45 +246,36 @@ fn queue(app: &tauri::AppHandle, from: &str, request: Request, peers: &mut HashM
 
 /// Answers one peer's requests strictly in arrival order.
 async fn peer(app: tauri::AppHandle, from: String, mut requests: mpsc::Receiver<Request>) {
-    while let Some((message, key, trusted)) = requests.recv().await {
-        if let Some(response) = host::handle(&app, &from, &message, trusted).await {
-            // An untrusted caller only ever gets an error back, never task content.
-            if let Err(error) = send_sealed(&app, &from, &key, &response) {
-                let failure = json!({"type": "res", "id": response["id"], "ok": false, "error": error});
-                let _ = send_sealed(&app, &from, &key, &failure);
-            }
+    while let Some(request) = requests.recv().await {
+        answer(&app, &from, request).await;
+    }
+}
+
+async fn answer(app: &tauri::AppHandle, from: &str, (message, key, trusted): Request) {
+    if let Some(response) = host::handle(app, from, &message, trusted).await {
+        // An untrusted caller only ever gets an error back, never task content.
+        if let Err(error) = send_sealed(app, from, &key, &response) {
+            let failure = json!({"type": "res", "id": response["id"], "ok": false, "error": error});
+            let _ = send_sealed(app, from, &key, &failure);
         }
     }
 }
 
-/// One `remote://task-changed` payload per valid id; the focused task carries its live state.
-fn task_changes(from: &str, data: &Value) -> Vec<Value> {
-    let focus = &data["focus"];
-    let focused = focus["sessionId"].as_str();
-    let ids = data["sessionIds"].as_array().map(Vec::as_slice).unwrap_or_default();
-    ids.iter()
-        .take(500)
-        .filter_map(Value::as_str)
-        .filter(|id| host::valid_id(id).is_ok())
-        .map(|session| {
-            let mut event = json!({"deviceId": from, "sessionId": session});
-            if focused == Some(session) {
-                event["live"] = json!({
-                    "liveText": focus["liveText"].as_str().unwrap_or_default(),
-                    "status": focus["status"].as_str().unwrap_or_default(),
-                    "historyVersion": focus["historyVersion"].as_u64(),
-                });
-            }
-            event
-        })
-        .collect()
-}
-
-/// Applies a presence list, which carries the full device rows.
+/// Applies a presence list, which carries the full device rows. A host that comes online (or restarted, forgetting subscriptions) is subscribed again.
 fn presence(app: &tauri::AppHandle, list: &Value) {
     let Some(list) = list.as_array() else { return };
-    apply_presence(&mut remote(app).lock(), list);
+    let renamed = {
+        let state = remote(app);
+        let mut inner = state.lock();
+        apply_presence(&mut inner, list);
+        super::remember_names(&inner.devices)
+    };
     emit_presence(app);
+    if renamed {
+        use tauri::Emitter;
+        let _ = app.emit("sessions-changed", ());
+    }
+    tauri::async_runtime::spawn(mirror::subscribe_all(app.clone()));
 }
 
 /// The list replaces the known devices. A device missing from it is gone, with its subscription.
@@ -290,6 +309,7 @@ pub(crate) async fn refresh_devices(app: &tauri::AppHandle) -> Result<()> {
         // Presence that arrived meanwhile is newer.
         if !inner.presence {
             inner.subscribers.retain(|id, _| devices.iter().any(|d| &d.id == id));
+            super::remember_names(&devices);
             inner.devices = devices;
         }
     }
@@ -345,6 +365,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_starts_run_beside_the_queue() {
+        assert!(runs_apart(&json!({"method": "task.start"})));
+        for method in ["subscribe", "task.send", "task.messages", "task.stop"] {
+            assert!(!runs_apart(&json!({"method": method})), "{method}");
+        }
+    }
+
+    #[test]
     fn backoff_resets_only_after_a_stable_socket() {
         let s = Duration::from_secs;
         assert_eq!(backoff(s(8), &Outcome::Failed), Some((s(8), s(16))));
@@ -359,9 +387,8 @@ mod tests {
     #[test]
     fn presence_is_the_device_list_and_prunes_subscribers() {
         let mut inner = Inner::default();
-        let until = Instant::now();
-        inner.subscribers.insert("a".into(), super::super::Subscriber { until, focus: None });
-        inner.subscribers.insert("b".into(), super::super::Subscriber { until, focus: None });
+        inner.subscribers.insert("a".into(), super::super::Subscriber::default());
+        inner.subscribers.insert("b".into(), super::super::Subscriber::default());
         apply_presence(&mut inner, &[json!({"id": "a", "name": "Mac", "platform": "macos", "publicKey": "k", "host": false, "online": true, "lastSeen": 5}), json!({"id": "c", "online": false, "host": true}), json!({"id": "bad id"})]);
         assert!(inner.presence);
         assert_eq!(inner.devices.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
@@ -369,12 +396,6 @@ mod tests {
         assert_eq!(inner.subscribers.keys().collect::<Vec<_>>(), ["a"]);
         apply_presence(&mut inner, &[]);
         assert!(inner.devices.is_empty() && inner.subscribers.is_empty());
-    }
-
-    #[test]
-    fn only_the_focused_task_carries_live_state() {
-        let events = task_changes("host", &json!({"sessionIds": ["s1", "s2", "bad id"], "focus": {"sessionId": "s2", "liveText": "hi", "status": "running", "historyVersion": 7}}));
-        assert_eq!(events, vec![json!({"deviceId": "host", "sessionId": "s1"}), json!({"deviceId": "host", "sessionId": "s2", "live": {"liveText": "hi", "status": "running", "historyVersion": 7}})]);
     }
 
     #[test]

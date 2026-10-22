@@ -1,29 +1,33 @@
 //! Answers requests from the account's other computers, only while
 //! "Allow remote control" is on and only from computers trusted here (their key pinned),
-//! and sends them batched `tasks.changed` events. Remote prompts run under the same
-//! approval policy as local ones.
-use super::{approvals, remote, socket, Subscriber};
-use crate::{message_queue, overlay, AppState, Result};
+//! and pushes the agent events of the tasks they mirror. Remote prompts run under the
+//! same approval policy as local ones.
+use super::{remote, socket, start, Subscriber};
+use crate::{message_queue, providers::AgentEvent, AppState, Result};
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
-pub(crate) const METHODS: [&str; 7] = ["subscribe", "tasks.list", "task.get", "task.start", "task.send", "task.stop", "approval.respond"];
+pub(crate) const METHODS: [&str; 9] = ["subscribe", "task.start", "task.messages", "task.send", "task.stop", "task.steer", "task.configure", "approval.respond", "input.respond"];
 pub(crate) const OFF: &str = "Remote control is off on this computer";
-const MAX_TEXT: usize = 100 * 1024;
+pub(crate) const MAX_TEXT: usize = 100 * 1024;
 const SUBSCRIPTION: Duration = Duration::from_secs(10 * 60);
-const BATCH: Duration = Duration::from_millis(250);
-const MAX_IDS: usize = 500;
+/// Events wait this long, so one frame carries everything a subscriber missed meanwhile.
+const FLUSH: Duration = Duration::from_millis(100);
+pub(crate) const MAX_IDS: usize = 500;
 const WINDOW_MS: i64 = 60_000;
 const MAX_SEEN: usize = 20_000;
-/// A `task.get` reply's JSON budget: sealing adds a third (base64) plus a small envelope,
-/// so this stays under the relay's 256 KB frame.
-const PAGE_BUDGET: usize = 180 * 1024;
-/// A single message larger than this is cut, with [`CUT`] marking the cut.
+/// A reply's or event frame's JSON budget: sealing adds a third (base64) plus a small
+/// envelope, so this stays under the relay's 256 KB frame.
+pub(crate) const PAGE_BUDGET: usize = 180 * 1024;
+/// A single message or event larger than this is cut, with [`CUT`] marking the cut.
 const MAX_MESSAGE: usize = 120 * 1024;
-/// Live text keeps only its tail beyond this.
-const MAX_LIVE: usize = 32 * 1024;
+/// Messages read per `task.messages` page before the budget trims it.
+const PAGE_ROWS: i64 = 400;
+/// Buffered events per subscriber; a viewer that falls this far behind resyncs at run end.
+const MAX_BUFFER: usize = 4096;
 const CUT: &str = "\n…[cut on the host to fit a remote page]";
 
 pub(crate) fn untrusted(host_name: &str) -> String {
@@ -77,31 +81,50 @@ pub(crate) fn valid_id(id: &str) -> Result<()> {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Call {
-    Subscribe { session_id: Option<String> },
-    List,
-    Get { session_id: String, before_id: Option<i64>, history_version: Option<u64> },
-    Start { project_id: Option<String>, text: String },
+    Subscribe { session_ids: Vec<String> },
+    Start(start::Start),
+    Messages { session_id: String, after_id: i64 },
     Send { session_id: String, text: String },
     Stop { session_id: String },
+    Steer { session_id: String, text: String },
+    Configure { session_id: String, model: Option<(String, String)>, effort: Option<Option<String>>, mode: Option<String> },
     Approve { session_id: String, request_id: String, approve: bool },
+    Answer { session_id: String, request_id: String, response: Value },
 }
 
-fn id_param(params: &Value, key: &str) -> Result<String> {
+pub(crate) fn id_param(params: &Value, key: &str) -> Result<String> {
     let id = params[key].as_str().ok_or_else(|| format!("Missing {key}."))?;
     valid_id(id).map_err(|_| format!("Invalid {key}."))?;
     Ok(id.to_owned())
 }
 
-fn optional_id(params: &Value, key: &str) -> Result<Option<String>> {
-    params.get(key).filter(|v| !v.is_null()).map(|_| id_param(params, key)).transpose()
-}
-
-fn text_param(params: &Value) -> Result<String> {
-    let text = params["text"].as_str().map(str::trim).unwrap_or_default();
+pub(crate) fn text_param(params: &Value, key: &str) -> Result<String> {
+    let text = params[key].as_str().map(str::trim).unwrap_or_default();
     if text.is_empty() || text.len() > MAX_TEXT {
         return Err("Send between 1 byte and 100 KB of text.".into());
     }
     Ok(text.to_owned())
+}
+
+/// A short printable setting (provider, model, mode, effort), or None when absent.
+pub(crate) fn name_param(params: &Value, key: &str) -> Result<Option<String>> {
+    match params.get(key).filter(|v| !v.is_null()) {
+        None => Ok(None),
+        Some(value) => {
+            let text = value.as_str().filter(|text| !text.is_empty() && text.len() <= 200 && text.chars().all(|c| c.is_ascii_graphic())).ok_or_else(|| format!("Invalid {key}."))?;
+            Ok(Some(text.to_owned()))
+        }
+    }
+}
+
+fn configure(params: &Value) -> Result<Call> {
+    let model = match (name_param(params, "provider")?, name_param(params, "model")?) {
+        (Some(provider), Some(model)) => Some((provider, model)),
+        (None, None) => None,
+        _ => return Err("Send a provider with the model.".into()),
+    };
+    let effort = params.get("effort").map(|_| name_param(params, "effort")).transpose()?;
+    Ok(Call::Configure { session_id: id_param(params, "sessionId")?, model, effort, mode: name_param(params, "mode")? })
 }
 
 /// Validates a request. Everything is refused while hosting is off.
@@ -110,13 +133,22 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
         return Err(OFF.into());
     }
     Ok(match method {
-        "subscribe" => Call::Subscribe { session_id: optional_id(params, "sessionId")? },
-        "tasks.list" => Call::List,
-        "task.get" => Call::Get { session_id: id_param(params, "sessionId")?, before_id: params["beforeId"].as_i64(), history_version: params["historyVersion"].as_u64() },
-        "task.start" => Call::Start { project_id: optional_id(params, "projectId")?, text: text_param(params)? },
-        "task.send" => Call::Send { session_id: id_param(params, "sessionId")?, text: text_param(params)? },
+        "subscribe" => {
+            let ids = params["sessionIds"].as_array().ok_or("Missing sessionIds.")?;
+            if ids.len() > MAX_IDS {
+                return Err(format!("Mirror up to {MAX_IDS} tasks per computer."));
+            }
+            let session_ids = ids.iter().map(|id| id.as_str().filter(|id| valid_id(id).is_ok()).map(str::to_owned).ok_or("Invalid sessionIds.")).collect::<std::result::Result<_, _>>()?;
+            Call::Subscribe { session_ids }
+        }
+        "task.start" => Call::Start(start::parse(params)?),
+        "task.messages" => Call::Messages { session_id: id_param(params, "sessionId")?, after_id: params["afterId"].as_i64().unwrap_or(0).max(0) },
+        "task.send" => Call::Send { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")? },
         "task.stop" => Call::Stop { session_id: id_param(params, "sessionId")? },
+        "task.steer" => Call::Steer { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")? },
+        "task.configure" => configure(params)?,
         "approval.respond" => Call::Approve { session_id: id_param(params, "sessionId")?, request_id: id_param(params, "requestId")?, approve: params["approve"].as_bool().ok_or("Missing approve.")? },
+        "input.respond" => Call::Answer { session_id: id_param(params, "sessionId")?, request_id: id_param(params, "requestId")?, response: params.get("response").cloned().ok_or("Missing response.")? },
         _ => return Err("Unknown method.".into()),
     })
 }
@@ -144,26 +176,40 @@ pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value, 
     })
 }
 
+/// The task must exist here; a mirror never forwards a second hop.
+fn local_task(state: &AppState, session_id: &str) -> Result<()> {
+    let task = state.store.lock().map_err(|e| e.to_string())?.session(session_id)?;
+    if task.remote_device.is_some() {
+        return Err("That task runs on another computer.".into());
+    }
+    Ok(())
+}
+
 async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
     let state = app.state::<AppState>();
     match call {
-        Call::Subscribe { session_id } => {
-            remote(app).lock().subscribers.insert(from.to_owned(), Subscriber { until: Instant::now() + SUBSCRIPTION, focus: session_id });
-            Ok(json!({}))
+        Call::Subscribe { session_ids } => {
+            let tasks = subscribed_tasks(&state, &session_ids)?;
+            let state = remote(app);
+            let mut inner = state.lock();
+            let subscriber = inner.subscribers.entry(from.to_owned()).or_default();
+            // Added to, not replaced: a task started a moment ago may not be in the list yet.
+            // An expired (or overgrown) subscription starts over.
+            if subscriber.until.is_none_or(|until| until <= Instant::now()) || subscriber.sessions.len() > 4 * MAX_IDS {
+                subscriber.sessions.clear();
+            }
+            subscriber.until = Some(Instant::now() + SUBSCRIPTION);
+            subscriber.sessions.extend(session_ids);
+            Ok(json!({"tasks": tasks}))
         }
-        Call::List => to_json(&overlay::overlay_snapshot(state, app.state()).await?),
-        Call::Get { session_id, before_id, history_version } => {
-            let live = state.agents.lock().map_err(|e| e.to_string())?.get(&session_id).filter(|agent| !agent.stopped.load(std::sync::atomic::Ordering::Acquire)).map(|agent| agent.approvals.lock().map(|set| set.clone()).unwrap_or_default()).unwrap_or_default();
-            let mut thread = thread(app, &session_id, before_id, history_version, true).await?;
-            thread["approvals"] = json!(approvals::pending(&session_id, &live));
-            cap_page(&mut thread);
-            Ok(thread)
-        }
-        Call::Start { project_id, text } => {
-            let session_id = overlay::overlay_launch(app.clone(), state, app.state(), text, project_id).await?;
-            Ok(json!({"sessionId": session_id}))
+        Call::Start(request) => start::run(app, from, request).await,
+        Call::Messages { session_id, after_id } => {
+            local_task(&state, &session_id)?;
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            messages_page(&store.db, &session_id, after_id)
         }
         Call::Send { session_id, text } => {
+            local_task(&state, &session_id)?;
             // Like Enter in the composer: a running task queues the message.
             let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
             if busy()? {
@@ -180,77 +226,204 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             Ok(json!({"queued": false}))
         }
         Call::Stop { session_id } => {
+            local_task(&state, &session_id)?;
             crate::stop_session(app.clone(), state, session_id).await?;
             Ok(json!({}))
         }
+        Call::Steer { session_id, text } => {
+            local_task(&state, &session_id)?;
+            message_queue::steer_task(app.clone(), state, session_id, text).await?;
+            Ok(json!({}))
+        }
+        Call::Configure { session_id, model, effort, mode } => {
+            local_task(&state, &session_id)?;
+            if let Some(mode) = mode {
+                crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, Some(mode)).await?;
+            }
+            if let Some((provider, model)) = model {
+                crate::configure_session(app.clone(), state.clone(), session_id.clone(), provider, model, None).await?;
+            }
+            if let Some(effort) = effort {
+                crate::set_reasoning_effort(app.clone(), state, session_id, effort).await?;
+            }
+            let _ = app.emit("sessions-changed", ());
+            Ok(json!({}))
+        }
         Call::Approve { session_id, request_id, approve } => {
-            crate::respond_approval(state, session_id.clone(), request_id.clone(), approve).await?;
-            approvals::settle(&session_id, &request_id);
+            local_task(&state, &session_id)?;
+            crate::respond_approval(app.clone(), state, session_id.clone(), request_id.clone(), approve).await?;
             // Clear the card in this computer's window, as bot approvals do.
-            let event = crate::providers::AgentEvent { session_id, kind: "approval_cancelled".into(), text: String::new(), request_id: Some(request_id), data: None, tool: None };
+            let event = AgentEvent { session_id, kind: "approval_cancelled".into(), text: String::new(), request_id: Some(request_id), data: None, tool: None };
             let _ = app.emit("agent-event", event);
+            Ok(json!({}))
+        }
+        Call::Answer { session_id, request_id, response } => {
+            local_task(&state, &session_id)?;
+            crate::respond_user_input(app.clone(), state, session_id, request_id, response).await?;
             Ok(json!({}))
         }
     }
 }
 
-fn to_json(value: &impl serde::Serialize) -> Result<Value> {
-    serde_json::to_value(value).map_err(|e| e.to_string())
+/// Each subscribed task that exists here: its status as this window shows it, its newest
+/// message id (so the viewer pulls what it missed) and its title.
+fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<Vec<Value>> {
+    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let mut tasks = Vec::new();
+    for id in ids {
+        let row: Option<(String, String, i64)> = store
+            .db
+            .query_row("SELECT status,title,(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1) FROM sessions WHERE id=?1 AND remote_device IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some((status, title, last_id)) = row else { continue };
+        // Only a registered agent is really running; a stale row reads as interrupted.
+        let status = if agents.contains_key(id) || !matches!(status.as_str(), "running" | "waiting") { status } else { "interrupted".into() };
+        tasks.push(json!({"sessionId": id, "status": status, "lastId": last_id, "title": title}));
+    }
+    Ok(tasks)
 }
 
-/// This task's history version: it changes when one of its messages is added, removed or
-/// rewritten to another length, never because another task changed. Kept under 2^53 so
-/// JavaScript reads it exactly.
-// ponytail: a same-length rewrite in place goes unseen; add an updated_at column if that matters.
-pub(crate) fn history_version(db: &rusqlite::Connection, session_id: &str) -> Result<u64> {
-    use std::hash::{Hash, Hasher};
-    let row: (i64, i64, i64) = db
-        .query_row("SELECT COALESCE(MAX(id),0), COUNT(*), COALESCE(SUM(length(content)),0) FROM messages WHERE session_id=?1", [session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+/// Messages after `after_id`, oldest first, cut to fit one frame. `hasMore` asks the
+/// viewer for the next page after the last id it got.
+pub(crate) fn messages_page(db: &rusqlite::Connection, session_id: &str, after_id: i64) -> Result<Value> {
+    let title: String = db.query_row("SELECT title FROM sessions WHERE id=?1", [session_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.ok_or("Conversation not found.")?;
+    let mut statement = db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id>?2 ORDER BY id LIMIT ?3").map_err(|e| e.to_string())?;
+    let rows: Vec<Value> = statement
+        .query_map(rusqlite::params![session_id, after_id, PAGE_ROWS], |r| {
+            Ok(json!({"id": r.get::<_, i64>(0)?, "role": r.get::<_, String>(1)?, "content": r.get::<_, String>(2)?, "createdAt": r.get::<_, i64>(3)?, "turnDurationMs": r.get::<_, Option<i64>>(4)?}))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<_>>()
         .map_err(|e| e.to_string())?;
-    let mut hasher = std::hash::DefaultHasher::new();
-    row.hash(&mut hasher);
-    Ok(hasher.finish() & ((1 << 53) - 1))
+    let fetched = rows.len();
+    let mut room = PAGE_BUDGET.saturating_sub(json!({"messages": [], "hasMore": true, "title": title}).to_string().len());
+    let mut kept = Vec::new();
+    for mut message in rows {
+        if message.to_string().len() > MAX_MESSAGE {
+            cut(&mut message);
+        }
+        let size = message.to_string().len() + 1;
+        // The first message always fits: once cut it is under the budget.
+        if size > room && !kept.is_empty() {
+            break;
+        }
+        room = room.saturating_sub(size);
+        kept.push(message);
+    }
+    let has_more = kept.len() < fetched || fetched as i64 == PAGE_ROWS;
+    Ok(json!({"messages": kept, "hasMore": has_more, "title": title}))
 }
 
-/// Puts this task's own version on an overlay thread; an unchanged history sends no messages.
-fn mark(thread: &mut Value, version: u64, unchanged: bool) {
-    thread["historyVersion"] = json!(version);
-    thread["historyUnchanged"] = json!(unchanged);
-    if unchanged {
-        thread["messages"] = json!([]);
-        thread["hasOlder"] = json!(false);
+/// Appends an event to a subscriber's buffer, joining consecutive text deltas.
+pub(crate) fn push_event(events: &mut Vec<Value>, event: Value) {
+    if event["kind"] == "text" {
+        if let Some(last) = events.last_mut().filter(|last| last["kind"] == "text" && last["sessionId"] == event["sessionId"] && last["data"] == event["data"] && last["requestId"] == event["requestId"]) {
+            let joined = format!("{}{}", last["text"].as_str().unwrap_or_default(), event["text"].as_str().unwrap_or_default());
+            last["text"] = json!(joined);
+            return;
+        }
+    }
+    if events.len() < MAX_BUFFER {
+        events.push(event);
     }
 }
 
-/// The overlay thread with per-task versioning; `messages: false` reads only the live state.
-async fn thread(app: &tauri::AppHandle, session_id: &str, before_id: Option<i64>, known: Option<u64>, messages: bool) -> Result<Value> {
-    let state = app.state::<AppState>();
-    // Read before the page, so a message added meanwhile is fetched again next time.
-    let (version, revision) = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        (history_version(&store.db, session_id)?, store.db.total_changes())
+/// Events grouped into frames that each fit the budget; an oversized event is cut.
+pub(crate) fn frames(events: Vec<Value>) -> Vec<Vec<Value>> {
+    let mut frames = Vec::new();
+    let (mut frame, mut size) = (Vec::new(), 0);
+    for mut event in events {
+        if event.to_string().len() > MAX_MESSAGE {
+            shrink(&mut event, MAX_MESSAGE);
+        }
+        let length = event.to_string().len() + 1;
+        if size + length > PAGE_BUDGET && !frame.is_empty() {
+            frames.push(std::mem::take(&mut frame));
+            size = 0;
+        }
+        size += length;
+        frame.push(event);
+    }
+    if !frame.is_empty() {
+        frames.push(frame);
+    }
+    frames
+}
+
+/// Adds a task to a device's subscription, starting one if it has none.
+pub(crate) fn follow(app: &tauri::AppHandle, device: &str, session_id: &str) {
+    let state = remote(app);
+    let mut inner = state.lock();
+    let subscriber = inner.subscribers.entry(device.to_owned()).or_default();
+    if subscriber.until.is_none_or(|until| until <= Instant::now()) {
+        subscriber.until = Some(Instant::now() + SUBSCRIPTION);
+    }
+    subscriber.sessions.insert(session_id.to_owned());
+}
+
+/// Drops subscribers that expired, left the account or lost trust; true if any remain.
+fn prune_subscribers(inner: &mut super::Inner, now: Instant) -> bool {
+    let super::Inner { subscribers, devices, settings, .. } = inner;
+    subscribers.retain(|id, subscriber| subscriber.until.is_some_and(|until| until > now) && devices.iter().any(|d| &d.id == id && settings.is_trusted(id, &d.public_key)));
+    !subscribers.is_empty()
+}
+
+/// Queues an event for every device mirroring its task. Called on the agent-event hot
+/// path: nothing is cloned unless someone mirrors this task.
+pub(crate) fn agent_event(app: &tauri::AppHandle, event: &AgentEvent) {
+    buffer(app, &event.session_id, |subscriber| {
+        if let Ok(value) = serde_json::to_value(event) {
+            push_event(&mut subscriber.events, value);
+        }
+    });
+}
+
+/// Queues `run.finished` for every device mirroring the task.
+pub(crate) fn run_finished(app: &tauri::AppHandle, session_id: &str, successful: bool, stopped: bool, text: &str) {
+    buffer(app, session_id, |subscriber| subscriber.finished.push(json!({"sessionId": session_id, "successful": successful, "stopped": stopped, "text": text})));
+}
+
+fn buffer(app: &tauri::AppHandle, session_id: &str, mut add: impl FnMut(&mut Subscriber)) {
+    let Some(state) = app.try_state::<super::Remote>() else { return };
+    let schedule = {
+        let mut inner = state.lock();
+        if !inner.settings.host_enabled || inner.outbox.is_none() || !inner.subscribers.values().any(|s| s.sessions.contains(session_id)) {
+            return;
+        }
+        if !prune_subscribers(&mut inner, Instant::now()) {
+            return;
+        }
+        for subscriber in inner.subscribers.values_mut().filter(|s| s.sessions.contains(session_id)) {
+            add(subscriber);
+        }
+        !std::mem::replace(&mut inner.flushing, true)
     };
-    let unchanged = before_id.is_none() && (!messages || known == Some(version));
-    // Given its own current revision, the overlay skips reading the page.
-    let snapshot = overlay::overlay_thread(state, session_id.to_owned(), None, before_id, unchanged.then_some(revision)).await?;
-    let mut thread = to_json(&snapshot)?;
-    mark(&mut thread, version, unchanged);
-    Ok(thread)
-}
-
-/// The focused task's live state for a `tasks.changed` event.
-async fn focus(app: &tauri::AppHandle, session_id: &str) -> Option<Value> {
-    let thread = thread(app, session_id, None, None, false).await.ok()?;
-    Some(json!({"sessionId": session_id, "liveText": tail(thread["liveText"].as_str().unwrap_or_default(), MAX_LIVE), "status": thread["status"], "historyVersion": thread["historyVersion"]}))
-}
-
-/// The last `max` bytes of `text`, on a character boundary.
-fn tail(text: &str, max: usize) -> &str {
-    let mut start = text.len().saturating_sub(max);
-    while !text.is_char_boundary(start) {
-        start += 1;
+    if schedule {
+        tauri::async_runtime::spawn(flush(app.clone()));
     }
-    &text[start..]
+}
+
+/// Sends each subscriber one `agent.events` frame (more only past the frame budget),
+/// then its `run.finished` events, so a run's last deltas always arrive before its end.
+async fn flush(app: tauri::AppHandle) {
+    tokio::time::sleep(FLUSH).await;
+    let batches: Vec<(String, Vec<Value>, Vec<Value>)> = {
+        let state = remote(&app);
+        let mut inner = state.lock();
+        inner.flushing = false;
+        let hosting = inner.settings.host_enabled;
+        inner.subscribers.iter_mut().filter(|_| hosting).map(|(id, s)| (id.clone(), std::mem::take(&mut s.events), std::mem::take(&mut s.finished))).filter(|(_, events, finished)| !events.is_empty() || !finished.is_empty()).collect()
+    };
+    for (device, events, finished) in batches {
+        for frame in frames(events) {
+            let _ = socket::send_trusted(&app, &device, &json!({"type": "event", "name": "agent.events", "data": {"events": frame}}));
+        }
+        for data in finished {
+            let _ = socket::send_trusted(&app, &device, &json!({"type": "event", "name": "run.finished", "data": data}));
+        }
+    }
 }
 
 fn head(text: &str, max: usize) -> &str {
@@ -288,126 +461,6 @@ fn cut(message: &mut Value) {
     shrink(message, MAX_MESSAGE);
 }
 
-/// Keeps a `task.get` reply inside one relay frame: live text keeps its tail, a huge
-/// message is cut with a marker, and the oldest messages are left for the next page.
-fn cap_page(thread: &mut Value) {
-    if let Some(live) = thread["liveText"].as_str().filter(|text| text.len() > MAX_LIVE) {
-        thread["liveText"] = json!(tail(live, MAX_LIVE));
-    }
-    let Some(messages) = thread.get_mut("messages").and_then(Value::as_array_mut).map(std::mem::take) else { return };
-    let total = messages.len();
-    let mut room = PAGE_BUDGET.saturating_sub(thread.to_string().len());
-    let mut kept = Vec::new();
-    for mut message in messages.into_iter().rev() {
-        if message.to_string().len() > MAX_MESSAGE {
-            cut(&mut message);
-        }
-        let size = message.to_string().len() + 1;
-        if size > room {
-            break;
-        }
-        room -= size;
-        kept.push(message);
-    }
-    if kept.len() < total {
-        thread["hasOlder"] = json!(true);
-    }
-    kept.reverse();
-    thread["messages"] = Value::Array(kept);
-}
-
-/// Changed task ids, flushed to every subscriber at most once per 250 ms.
-#[derive(Default)]
-pub(crate) struct Batch {
-    dirty: BTreeSet<String>,
-    scheduled: bool,
-    last: Option<Instant>,
-}
-
-impl Batch {
-    /// Marks a task changed; Some(delay) means the caller should start the flush timer.
-    pub(crate) fn note(&mut self, id: &str, now: Instant) -> Option<Duration> {
-        self.dirty.insert(id.to_owned());
-        if self.scheduled {
-            return None;
-        }
-        self.scheduled = true;
-        Some(self.last.map_or(Duration::ZERO, |last| BATCH.saturating_sub(now.saturating_duration_since(last))))
-    }
-
-    /// Up to [`MAX_IDS`] changed ids, and whether more are left for the next flush.
-    pub(crate) fn take(&mut self, now: Instant) -> (Vec<String>, bool) {
-        self.last = Some(now);
-        let ids: Vec<String> = self.dirty.iter().take(MAX_IDS).cloned().collect();
-        for id in &ids {
-            self.dirty.remove(id);
-        }
-        self.scheduled = !self.dirty.is_empty();
-        (ids, self.scheduled)
-    }
-}
-
-/// Drops subscribers that expired, left the account or lost trust; true if any remain.
-fn prune_subscribers(inner: &mut super::Inner, now: Instant) -> bool {
-    let super::Inner { subscribers, devices, settings, .. } = inner;
-    subscribers.retain(|id, subscriber| subscriber.until > now && devices.iter().any(|d| &d.id == id && settings.is_trusted(id, &d.public_key)));
-    !subscribers.is_empty()
-}
-
-/// Called on the agent-event hot path: no allocation unless someone subscribes.
-pub(crate) fn task_changed(app: &tauri::AppHandle, session_id: &str) {
-    let Some(state) = app.try_state::<super::Remote>() else { return };
-    let delay = {
-        let mut inner = state.lock();
-        if !inner.settings.host_enabled || inner.outbox.is_none() || inner.subscribers.is_empty() {
-            return;
-        }
-        let now = Instant::now();
-        if !prune_subscribers(&mut inner, now) {
-            return;
-        }
-        inner.batch.note(session_id, now)
-    };
-    let Some(delay) = delay else { return };
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(delay).await;
-        loop {
-            let (ids, devices, more) = {
-                let state = remote(&app);
-                let mut inner = state.lock();
-                let now = Instant::now();
-                let (ids, more) = inner.batch.take(now);
-                let devices: Vec<(String, Option<String>)> = if inner.settings.host_enabled && prune_subscribers(&mut inner, now) {
-                    inner.subscribers.iter().map(|(id, subscriber)| (id.clone(), subscriber.focus.clone())).collect()
-                } else {
-                    Vec::new()
-                };
-                (ids, devices, more)
-            };
-            // Each focused task is read once per flush, however many devices watch it.
-            let mut focused: HashMap<String, Option<Value>> = HashMap::new();
-            for (device, focus_id) in devices {
-                let mut data = json!({"sessionIds": ids});
-                if let Some(session) = focus_id.filter(|session| ids.contains(session)) {
-                    if !focused.contains_key(&session) {
-                        let live = focus(&app, &session).await;
-                        focused.insert(session.clone(), live);
-                    }
-                    if let Some(live) = &focused[&session] {
-                        data["focus"] = live.clone();
-                    }
-                }
-                let _ = socket::send_trusted(&app, &device, &json!({"type": "event", "name": "tasks.changed", "data": data}));
-            }
-            if !more {
-                break;
-            }
-            tokio::time::sleep(BATCH).await;
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,18 +475,26 @@ mod tests {
 
     #[test]
     fn requests_are_validated() {
-        assert_eq!(parse(true, "subscribe", &json!({})), Ok(Call::Subscribe { session_id: None }));
-        assert_eq!(parse(true, "subscribe", &json!({"sessionId": "s1"})), Ok(Call::Subscribe { session_id: Some("s1".into()) }));
-        assert!(parse(true, "subscribe", &json!({"sessionId": "a b"})).is_err());
+        assert_eq!(parse(true, "subscribe", &json!({"sessionIds": ["s1", "s2"]})), Ok(Call::Subscribe { session_ids: vec!["s1".into(), "s2".into()] }));
+        assert!(parse(true, "subscribe", &json!({})).is_err());
+        assert!(parse(true, "subscribe", &json!({"sessionIds": ["a b"]})).is_err());
+        assert!(parse(true, "subscribe", &json!({"sessionIds": vec!["s"; MAX_IDS + 1]})).is_err());
         assert_eq!(parse(true, "task.send", &json!({"sessionId": "s1", "text": " hi "})), Ok(Call::Send { session_id: "s1".into(), text: "hi".into() }));
-        assert_eq!(parse(true, "task.start", &json!({"text": "go", "projectId": null})), Ok(Call::Start { project_id: None, text: "go".into() }));
-        assert!(parse(true, "task.start", &json!({"text": "go", "projectId": "bad id"})).is_err());
+        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": 7})), Ok(Call::Messages { session_id: "s1".into(), after_id: 7 }));
+        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": -3})), Ok(Call::Messages { session_id: "s1".into(), after_id: 0 }));
+        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "effort": null})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: Some(None), mode: None }));
+        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "mode": "ask"})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: None, mode: Some("ask".into()) }));
+        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "provider": "codex", "model": "gpt"})), Ok(Call::Configure { session_id: "s1".into(), model: Some(("codex".into(), "gpt".into())), effort: None, mode: None }));
+        assert!(parse(true, "task.configure", &json!({"sessionId": "s1", "model": "gpt"})).is_err());
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "x".repeat(MAX_TEXT + 1)})).is_err());
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "  "})).is_err());
-        assert!(parse(true, "task.get", &json!({"sessionId": "a\nb"})).is_err());
+        assert!(parse(true, "task.messages", &json!({"sessionId": "a\nb"})).is_err());
         assert!(parse(true, "task.stop", &json!({})).is_err());
         assert!(parse(true, "approval.respond", &json!({"sessionId": "s", "requestId": "r"})).is_err());
-        assert!(parse(true, "shell.exec", &json!({})).is_err());
+        assert!(parse(true, "input.respond", &json!({"sessionId": "s", "requestId": "r"})).is_err());
+        for gone in ["tasks.list", "task.get", "shell.exec"] {
+            assert!(parse(true, gone, &json!({})).is_err(), "{gone}");
+        }
         assert!(valid_id(&"a".repeat(201)).is_err());
     }
 
@@ -461,83 +522,57 @@ mod tests {
         assert!(!replay.seen.contains_key(nonce));
     }
 
+    fn event(session: &str, kind: &str, text: &str) -> Value {
+        serde_json::to_value(AgentEvent { session_id: session.into(), kind: kind.into(), text: text.into(), request_id: None, data: None, tool: None }).unwrap()
+    }
+
     #[test]
-    fn changes_batch_into_one_event_per_250_ms() {
-        let mut batch = Batch::default();
-        let t0 = Instant::now();
-        assert_eq!(batch.note("b", t0), Some(Duration::ZERO));
-        assert_eq!(batch.note("a", t0), None);
-        assert_eq!(batch.note("b", t0), None);
-        assert_eq!(batch.take(t0), (vec!["a".to_string(), "b".to_string()], false));
-        assert_eq!(batch.note("c", t0 + Duration::from_millis(100)), Some(Duration::from_millis(150)));
-        assert_eq!(batch.take(t0 + Duration::from_millis(250)), (vec!["c".to_string()], false));
-        assert_eq!(batch.note("d", t0 + Duration::from_millis(900)), Some(Duration::ZERO));
-        for i in 0..MAX_IDS {
-            batch.note(&format!("t{i:04}"), t0 + Duration::from_millis(900));
+    fn consecutive_text_deltas_are_merged() {
+        let mut events = Vec::new();
+        for (session, kind, text) in [("a", "text", "Hel"), ("a", "text", "lo"), ("b", "text", "other"), ("a", "text", " there"), ("a", "tool", "ls"), ("a", "text", "!"), ("a", "text", "?")] {
+            push_event(&mut events, event(session, kind, text));
         }
-        let (ids, more) = batch.take(t0 + Duration::from_millis(900));
-        assert_eq!((ids.len(), more), (MAX_IDS, true));
-        assert_eq!(batch.take(t0 + Duration::from_millis(1150)).0.len(), 1);
+        let texts: Vec<(&str, &str)> = events.iter().map(|e| (e["sessionId"].as_str().unwrap(), e["text"].as_str().unwrap())).collect();
+        assert_eq!(texts, [("a", "Hello"), ("b", "other"), ("a", " there"), ("a", "ls"), ("a", "!?")]);
+        // A delta of another message (its data differs) starts a new event.
+        let mut tagged = event("a", "text", "new");
+        tagged["data"] = json!({"messageId": "m2"});
+        push_event(&mut events, tagged);
+        assert_eq!(events.len(), 6);
+        // A viewer that falls far behind stops buffering; it catches up at the run end.
+        let mut full: Vec<Value> = (0..MAX_BUFFER).map(|i| event("a", "tool", &i.to_string())).collect();
+        push_event(&mut full, event("a", "tool", "late"));
+        assert_eq!(full.len(), MAX_BUFFER);
     }
 
     #[test]
-    fn history_versions_are_per_task() {
-        let db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, content TEXT NOT NULL); INSERT INTO messages(session_id,content) VALUES ('a','hi'),('b','yo');").unwrap();
-        let first = history_version(&db, "a").unwrap();
-        assert!(first < 1 << 53);
-        db.execute("INSERT INTO messages(session_id,content) VALUES ('b','another task')", []).unwrap();
-        assert_eq!(history_version(&db, "a").unwrap(), first, "another task's change keeps this version");
-        db.execute("UPDATE messages SET content='{\"status\":\"completed\"}' WHERE session_id='a'", []).unwrap();
-        let rewritten = history_version(&db, "a").unwrap();
-        assert_ne!(rewritten, first, "a tool updated in place changes it");
-        db.execute("INSERT INTO messages(session_id,content) VALUES ('a','next')", []).unwrap();
-        assert_ne!(history_version(&db, "a").unwrap(), rewritten);
-        assert_ne!(history_version(&db, "empty").unwrap(), first);
-    }
-
-    #[test]
-    fn an_unchanged_history_sends_no_messages() {
-        let mut thread = json!({"messages": [{"id": 1}], "hasOlder": true, "liveText": "x", "historyVersion": 99});
-        mark(&mut thread, 42, true);
-        assert_eq!(thread, json!({"messages": [], "hasOlder": false, "liveText": "x", "historyVersion": 42, "historyUnchanged": true}));
-        let mut thread = json!({"messages": [{"id": 1}], "hasOlder": true});
-        mark(&mut thread, 42, false);
-        assert_eq!(thread, json!({"messages": [{"id": 1}], "hasOlder": true, "historyVersion": 42, "historyUnchanged": false}));
-    }
-
-    #[test]
-    fn pages_fit_one_frame() {
-        let message = |id: i64, content: String| json!({"id": id, "sessionId": "s", "role": "assistant", "content": content, "createdAt": 0});
-        let mut messages: Vec<Value> = (1..=40).map(|id| message(id, "a".repeat(10 * 1024))).collect();
-        messages.push(message(41, "b".repeat(10 * 1024)));
-        messages.push(message(42, "é".repeat(200 * 1024)));
-        let mut thread = json!({"messages": messages, "hasOlder": false, "liveText": "l".repeat(100 * 1024), "status": "running"});
-        cap_page(&mut thread);
-        assert!(thread.to_string().len() <= PAGE_BUDGET);
-        assert_eq!(thread["hasOlder"], true);
-        assert_eq!(thread["liveText"].as_str().unwrap().len(), MAX_LIVE);
-        let kept = thread["messages"].as_array().unwrap();
-        // The newest messages stay, in order; huge ones are cut with a marker.
-        let ids: Vec<i64> = kept.iter().map(|m| m["id"].as_i64().unwrap()).collect();
-        assert_eq!(ids.last(), Some(&42));
-        assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1));
-        let newest = &kept[kept.len() - 1];
-        assert!(newest.to_string().len() <= MAX_MESSAGE && newest["content"].as_str().unwrap().ends_with(CUT));
-        assert!(ids.len() > 1 && ids.len() < 42);
-        let mut tool = message(43, json!({"status": "completed", "output": "o".repeat(300 * 1024)}).to_string());
-        cut(&mut tool);
-        assert!(tool.to_string().len() <= MAX_MESSAGE);
-        let tool = serde_json::from_str::<Value>(tool["content"].as_str().unwrap()).expect("tool content still parses");
-        assert!(tool["output"].as_str().unwrap().ends_with(CUT) && tool["status"] == "completed");
-        // A sealed frame for this page stays under the relay's limit.
+    fn events_are_framed_under_the_budget() {
+        let events: Vec<Value> = (0..30).map(|i| event("a", "tool", &format!("{i}{}", "o".repeat(20 * 1024)))).chain([event("a", "text", &"é".repeat(300 * 1024))]).collect();
+        let framed = frames(events);
+        assert!(framed.len() > 1);
+        assert_eq!(framed.iter().map(Vec::len).sum::<usize>(), 31, "nothing is dropped");
         let key = [7u8; 32];
-        let body = super::super::crypto::seal(&key, "a", "b", json!({"type": "res", "id": "r", "ok": true, "result": thread}).to_string().as_bytes()).unwrap();
-        assert!(json!({"to": "b", "body": body, "ref": "r"}).to_string().len() < 256 * 1024);
-        // A small page is untouched.
-        let mut small = json!({"messages": [message(1, "hi".into())], "hasOlder": false, "liveText": ""});
-        let before = small.clone();
-        cap_page(&mut small);
-        assert_eq!(small, before);
+        for frame in &framed {
+            let body = super::super::crypto::seal(&key, "a", "b", json!({"type": "event", "name": "agent.events", "data": {"events": frame}}).to_string().as_bytes()).unwrap();
+            assert!(json!({"to": "b", "body": body}).to_string().len() < 256 * 1024);
+        }
+        assert!(framed.last().unwrap()[0]["text"].as_str().unwrap().ends_with(CUT));
+        assert!(frames(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn huge_messages_are_cut_and_tool_json_still_parses() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL); CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, turn_duration_ms INTEGER); INSERT INTO sessions VALUES ('s','Task'),('t','Other');").unwrap();
+        let tool = json!({"status": "completed", "output": "o".repeat(300 * 1024)}).to_string();
+        db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('s','tool',?1,1),('t','user','elsewhere',2),('s','assistant','done',3)", [&tool]).unwrap();
+        let page = messages_page(&db, "s", 0).unwrap();
+        let messages = page["messages"].as_array().unwrap();
+        assert_eq!((messages.len(), page["hasMore"].as_bool(), page["title"].as_str()), (2, Some(false), Some("Task")), "only this task's messages");
+        assert!(messages[0].to_string().len() <= MAX_MESSAGE);
+        let parsed = serde_json::from_str::<Value>(messages[0]["content"].as_str().unwrap()).expect("tool content still parses");
+        assert!(parsed["output"].as_str().unwrap().ends_with(CUT) && parsed["status"] == "completed");
+        assert_eq!(messages[1]["content"], "done");
+        assert!(messages_page(&db, "missing", 0).is_err());
     }
 }

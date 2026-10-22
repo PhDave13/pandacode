@@ -45,8 +45,8 @@ import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
 import { createThreadFind } from './thread-find';
-import { computersHtml } from './sidebar-computers';
-import type { RemoteDevice, RemoteHost, RemoteStatus } from './remote-types';
+import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
+import { LOCAL, behindDialog, behindText, computerControl, computerItems } from './remote-target';
 import { botAvatar, botsBarHtml, botsListHtml, botsPanelHeadHtml, storedSidebarView, storeSidebarView, syncSeen, type SidebarView } from './sidebar-bots';
 import { connectAgentUiActions, type AgentUiAction } from './agent-ui-actions';
 import { createAgentInput, type AgentInput } from './agent-input';
@@ -71,7 +71,7 @@ import { initializeAgentUpdates } from './agent-updates';
 /* Visual thesis: calm surfaces, system typography, yellow selection, and bamboo details.
  * Content: project navigation → conversation → contextual source review.
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
-type WorkspaceView = 'conversation' | 'board' | 'github' | 'remote';
+type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
 type Stream = { text: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage };
 const state = {
@@ -267,13 +267,12 @@ $app.innerHTML = `<div class="workspace">
     <div id="navigation" class="navigation"></div>
     <div id="sidebar-note" class="sidebar-note" hidden></div>
     <section id="sidebar-bots-panel" class="bots-panel" aria-label="Bots"></section>
-    <div id="sidebar-computers" class="sidebar-computers" hidden></div>
     <div id="sidebar-bots" class="sidebar-bots"></div>
     <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="archive-view" id="archive-toggle" title="Archived tasks" aria-label="Archived tasks">${icon('archive')}</button><button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
     <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}<button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button><div class="view-switch" role="group" aria-label="Workspace view"><button data-action="conversation-view" aria-label="Conversation view" aria-pressed="true">${icon('chat')}<span>Conversation</span></button><button data-action="board-view" aria-label="Board view" aria-pressed="false">${icon('board')}<span>Board</span></button><button data-action="github-view" aria-label="GitHub view" aria-pressed="false">${icon('github')}<span>GitHub</span></button></div><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}<span class="header-divider" aria-hidden="true"></span>${button('moodboards', 'Project moodboards', 'images')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}<span class="header-divider" aria-hidden="true"></span>${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div></header>
-    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section id="remote-view" aria-label="Remote computer" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><div id="subagents-host" class="subagents-host" hidden></div><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div></section></div>
+    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><div id="subagents-host" class="subagents-host" hidden></div><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div></section></div>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
@@ -357,6 +356,7 @@ const worktrees = createWorktrees({
   git: () => state.git, gitError: () => state.gitError,
   draft: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '',
   attachable: () => newTaskView(),
+  computer: (task, fresh) => computerControl(task, fresh, remoteTargets, remoteChoice),
   running: () => isRunning(),
   afterAttach: async (saved, live) => {
     const index = state.sessions.findIndex(s => s.id === saved.id); if (index >= 0) state.sessions[index] = saved;
@@ -835,7 +835,7 @@ function renderNavigation(): void {
   if ((shownIcon?.outerHTML ?? '') !== filterIcon) { shownIcon?.remove(); if (filterIcon) filterLabel.insertAdjacentHTML('beforebegin', filterIcon); }
   const sidebarSessions = listedSessions().filter(s => s.archived === state.archived && (state.archived || taskStage(s) !== 'completed') && !botProjects.has(s.projectId));
   const visible = sidebarSessions.filter(s => (!state.projectFilter || s.projectId === state.projectFilter) && s.title.toLowerCase().includes(state.query.toLowerCase()));
-  renderBots(); renderComputers();
+  renderBots();
   $('#archive-toggle').classList.toggle('active', state.archived);
   $('#archive-toggle').setAttribute('aria-pressed', String(state.archived));
   const row = (s: Session, inFolder = false, inProject = false): string => {
@@ -990,7 +990,8 @@ function refreshTeamProgress(): void {
 }
 /** A turn's change card, or nothing when the snapshot has nothing to report. */
 function changesRow(sessionId: string, changes: TurnChanges | undefined): string {
-  const card = changes ? renderTurnChanges(sessionId, changes, sessionId === state.sessionId && projectRunner.available()) : '';
+  // A remote task's diffs live on its computer; their review and commit actions would act on this one.
+  const card = changes && !state.sessions.find(task => task.id === sessionId)?.remoteDevice ? renderTurnChanges(sessionId, changes, sessionId === state.sessionId && projectRunner.available()) : '';
   return card ? `<div class="turn-changes-row">${card}</div>` : '';
 }
 function renderTranscript(preservePosition = false): void {
@@ -1385,7 +1386,7 @@ function browserContextText(items: BrowserAttachment[]): string {
 }
 function renderBoardView(): void {
   if (state.view === 'github' && !githubEnabled()) state.view = 'conversation';
-  const board = state.view === 'board', hub = state.view === 'github', remote = state.view === 'remote';
+  const board = state.view === 'board', hub = state.view === 'github';
   $('.workspace').classList.toggle('board-view', board);
   $('.workspace').classList.toggle('github-view', hub);
   // A thread opened from GitHub sits beside it, laid out like the board's side panel.
@@ -1396,12 +1397,9 @@ function renderBoardView(): void {
   for (const [action, on] of [['board-view', board], ['conversation-view', state.view === 'conversation'], ['github-view', hub]] as const) document.querySelector(`[data-action="${action}"]`)!.setAttribute('aria-pressed', String(on));
   trackSegment($('.view-switch'), document.querySelector<HTMLElement>('.view-switch > [aria-pressed="true"]'));
   syncGithubHub(hub);
-  $('.workspace').classList.toggle('remote-view', remote);
-  $('#remote-view').hidden = !remote;
-  if (!remote) remoteView?.close();
   const pane = $('.conversation-pane');
   const paneWasHidden = pane.hidden;
-  pane.hidden = (hub || board || remote) && !state.boardPanel;
+  pane.hidden = (hub || board) && !state.boardPanel;
   if (paneWasHidden !== pane.hidden) { inspectorSuppressed = board && pane.hidden; renderInspector(); }
   subagents.setTask(state.sessionId, !pane.hidden);
   jevActivity.setTask(pane.hidden ? '' : state.sessionId);
@@ -2085,9 +2083,15 @@ async function limitAction(action: string, element: HTMLElement): Promise<void> 
     finally { scheduleLimitResumes(); renderComposer(); }
   }
 }
+async function fileContext(s: Session, path: string): Promise<string> {
+  const content = await call<string>('read_file', { ...workspaceContext(s), path });
+  return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}${content.length > 32768 ? '\n[Context truncated at 32 KiB]' : ''}\n\`\`\``;
+}
 async function send(): Promise<void> {
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!text || !s || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
+  const target = !s.remoteDevice && newTaskView() ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;
+  if (target) return sendRemote(s, target, draft, text);
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
   const filePaths = [...state.attachments], browserItems = state.browserAttachments.get(s.id) ?? [];
@@ -2128,7 +2132,7 @@ async function send(): Promise<void> {
   let browserItemsConsumed = false, moodboardItemsConsumed = false, promptItemsConsumed = false;
   const isCurrent = () => state.sessionId === s.id;
   try {
-    const contexts = await Promise.all(filePaths.map(async path => { const content = await call<string>('read_file', { ...workspaceContext(s), path }); return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}${content.length > 32768 ? '\n[Context truncated at 32 KiB]' : ''}\n\`\`\``; }));
+    const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     // Mentioned issues and pull requests travel with the message, so every harness can read them.
     const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
     const sentIds = new Set(browserItems.map(item => item.id));
@@ -2503,6 +2507,8 @@ function renderInspector(): void {
   if (state.inspectorTab === 'pull' && pullTask && visible) { pullView.show(target, pullTask); return; }
   pullView.dispose();
   if (!project()) { target.innerHTML = '<div class="inspector-empty">Open a project to browse files and review changes.</div>'; return; }
+  const remote = session()?.remoteDevice;
+  if (remote) { $('#changes-count').textContent = ''; target.innerHTML = `<div class="inspector-empty">${icon('monitor')}<h3>Runs on ${escape(remote.name)}</h3><p>Its changes and files are on that computer, so review and commit them there.</p></div>`; return; }
   if (state.inspectorLoading) { target.innerHTML = `<div class="inspector-empty" role="status">${icon('refresh')}<p>${state.inspectorTab === 'changes' ? 'Loading changes…' : 'Loading files…'}</p></div>`; return; }
   const loadError = state.inspectorTab === 'changes' ? state.gitError : state.filesError;
   if (loadError) {
@@ -3239,35 +3245,60 @@ async function reloadBotProjects(withProjects = true): Promise<void> {
   renderNavigation(); renderHeader();
 }
 const userProjects = (): Project[] => state.projects.filter(project => !botProjects.has(project.id));
-/* PandaCode Connect. Status and devices are kept here for the sidebar; the views load lazily. */
+/* PandaCode Connect. A new task can start on another computer: the context bar offers the
+ * signed-in account's targets; the started task is an ordinary session with `remoteDevice`. */
 const remoteHost: RemoteHost = { call, listen: (name, callback) => subscribe(name as 'remote://status', callback), notify, openUrl: url => call('open_external_url', { url }) };
-let remoteDevices: RemoteDevice[] = [], remoteSignedIn = false, remoteView: import('./remote').RemoteView | undefined, remoteLoading: Promise<void> | undefined;
-function renderComputers(): void {
-  const host = document.querySelector<HTMLElement>('#sidebar-computers');
-  if (!host) return;
-  const html = remoteSignedIn ? computersHtml(remoteDevices) : '';
-  host.hidden = !html;
-  morph(host, html);
+let remoteTargets: RemoteTarget[] = [], remoteChoice = LOCAL;
+async function refreshRemoteTargets(signedIn: boolean): Promise<void> {
+  remoteTargets = signedIn ? await call<RemoteTarget[]>('remote_targets').catch(() => remoteTargets) : [];
+  if (!remoteTargets.some(target => target.deviceId === remoteChoice && target.online)) remoteChoice = LOCAL;
+  renderHeader();
 }
 async function initRemote(): Promise<void> {
-  const refresh = async (status: RemoteStatus) => {
-    remoteSignedIn = status.signedIn;
-    remoteDevices = status.signedIn ? await call<RemoteDevice[]>('remote_devices').catch(() => remoteDevices) : [];
-    renderComputers();
-  };
-  await subscribe('remote://status', (status: RemoteStatus) => run(refresh(status)));
-  await subscribe('remote://presence', (devices: RemoteDevice[]) => { if (Array.isArray(devices)) { remoteDevices = devices; renderComputers(); remoteView?.presence(devices); } });
-  // A build without the Connect commands, or a signed-out one, simply shows no Computers.
+  let signedIn = false;
+  await subscribe('remote://status', (status: RemoteStatus) => { signedIn = status.signedIn; run(refreshRemoteTargets(signedIn)); });
+  await subscribe('remote://presence', () => run(refreshRemoteTargets(signedIn)));
+  // A build without the Connect commands, or a signed-out one, simply offers no other computers.
   const status = await call<RemoteStatus>('remote_status').catch(() => undefined);
-  if (status) await refresh(status);
+  if (status) { signedIn = status.signedIn; await refreshRemoteTargets(signedIn); }
 }
-/** Opens another computer's tasks full-width, like the GitHub view. */
-function openComputer(deviceId: string): void {
-  const device = remoteDevices.find(item => item.id === deviceId);
-  if (!device) return;
-  setWorkspaceView('remote');
-  remoteLoading ??= import('./remote').then(({ mountRemote }) => { remoteView = mountRemote($('#remote-view'), remoteHost); });
-  run(remoteLoading.then(() => remoteView?.open(device)));
+async function showComputerMenu(anchor: HTMLElement): Promise<void> {
+  await showChoices(anchor, { title: 'Run on', width: 280, items: computerItems(remoteTargets, remoteChoice), onSelect: id => { closeChoiceMenu(); remoteChoice = id; renderHeader(); } });
+}
+/** Resolves true on Continue; Cancel or closing the dialog resolves false. */
+function confirmBehind(name: string, check: RemoteRepoCheck): Promise<boolean> {
+  const dialog = modal('GitHub is behind this computer', behindDialog(name, check));
+  const form = dialog.querySelector<HTMLFormElement>('#remote-behind-form')!;
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(false), { once: true });
+    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); resolve(true); closeModal(); }, { once: true });
+  });
+}
+/** A New task sent with another computer chosen: check GitHub, then start it there with the same settings. */
+async function sendRemote(s: Session, target: RemoteTarget, draft: string, text: string): Promise<void> {
+  const filePaths = [...state.attachments], promptItems = attachments.list(s.id);
+  if ((state.browserAttachments.get(s.id) ?? []).length || (state.moodboardAttachments.get(s.id) ?? []).length || attachments.imageIds(promptItems).length) throw new Error(`Images and browser captures can’t be sent to ${target.name} yet. Remove them, or run on this computer.`);
+  configuringSessions.add(s.id);
+  try {
+    const check = await call<RemoteRepoCheck>('remote_repo_check', { projectId: s.projectId });
+    if (!check.repo) throw new Error(`${project()?.name ?? 'This project'} has no GitHub remote, so it can’t run on another computer.`);
+    if (behindText(check) && !await confirmBehind(target.name, check)) return;
+    const prompt = () => document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (state.sessionId !== s.id || prompt()?.value !== draft) throw new Error('Your task or message changed. Send it again.');
+    const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
+    const content = text + contexts.join('') + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
+    const { sessionId } = await call<{ sessionId: string }>('remote_start_task', {
+      // The empty New task draft becomes the mirror, so no stray draft is left behind.
+      sessionId: s.id, deviceId: target.deviceId, projectId: s.projectId, prompt: content, provider: s.provider, model: s.model, mode: s.mode,
+      effort: s.reasoningEffort ?? null, worktree: Boolean(s.worktreePath), branch: s.worktreeBranch || state.git?.branch || check.branch || null,
+    });
+    attachments.consume(s.id, promptItems);
+    state.attachments = state.attachments.filter(path => !filePaths.includes(path));
+    const field = prompt(); if (field?.dataset.sessionId === s.id) field.value = '';
+    state.drafts.delete(s.id);
+    await reloadSessions();
+    state.query = ''; await selectSession(sessionId, true);
+  } finally { configuringSessions.delete(s.id); }
 }
 /** The sidebar shows tasks or bots; the bar at its bottom switches between them. */
 let sidebarView: SidebarView = storedSidebarView();
@@ -3397,7 +3428,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'bot-settings': if (element.dataset.bot) await showBotSettings(element.dataset.bot, element.dataset.tab as import('./bots').Section | undefined); break;
     case 'bot-pause': if (element.dataset.bot) { const bot = sidebarBots.find(item => item.id === element.dataset.bot); if (bot) { await call('bot_set_paused', { botId: bot.id, paused: !bot.paused }); notify(bot.paused ? `${bot.name} resumed` : `${bot.name} paused`); await reloadBotProjects(false); } } break;
     case 'open-bot': if (element.dataset.bot) await openBot(element.dataset.bot); break;
-    case 'open-computer': if (element.dataset.device) openComputer(element.dataset.device); break;
+    case 'computer-menu': await showComputerMenu(element); break;
     case 'toggle-bots-view': setSidebarView(sidebarView === 'bots' ? 'tasks' : 'bots'); break;
     case 'import-conversations': await showConversationImport(); break;
     case 'agent-updates': await agentUpdates.show(); break;
