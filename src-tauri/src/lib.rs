@@ -34,6 +34,7 @@ mod moodboards;
 mod prompt_attachments;
 mod overlay;
 mod provider_settings;
+mod remote;
 mod providers;
 mod session_titles;
 mod slash_commands;
@@ -1623,6 +1624,11 @@ async fn launch_operation_admitted(
                     if saved.is_ok() && e.kind == "approval" {
                         if let Some(request_id) = &e.request_id {
                             bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
+                            remote::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
+                        }
+                    } else if e.kind == "approval_cancelled" {
+                        if let Some(request_id) = &e.request_id {
+                            remote::approval_settled(&e.session_id, request_id);
                         }
                     }
                     saved
@@ -1675,10 +1681,11 @@ async fn launch_operation_admitted(
             ) {
                 architect::activity(&app_sink, &e.session_id, team_sink.as_ref());
             }
-            let completed = e.kind == "turn_complete";
-            let changes_sid = e.session_id.clone();
+            remote::task_changed(&app_sink, &e.session_id);
+            // Cloned only for the turn boundary below.
+            let completed = (e.kind == "turn_complete").then(|| e.session_id.clone());
             let _ = app_sink.emit("agent-event", e);
-            if completed {
+            if let Some(changes_sid) = completed {
                 if let Some(tracker) = &tracker_sink {
                     let capture = blocking_snapshot(|| {
                         tracker
@@ -1887,6 +1894,8 @@ async fn launch_operation_admitted(
                 },
             ),
         );
+        remote::run_finished(&session_id);
+        remote::task_changed(&app, &session_id);
         // Bot conversations reply on their channel and send their next queued message.
         if !was_stopped {
             bots::run_finished(&app, &session_id, successful);
@@ -2866,6 +2875,7 @@ pub fn run() {
                 shutdown: AtomicU8::new(0),
             });
             overlay::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
+            remote::setup(app.handle(), &dir);
             app.manage(browser::BrowserState::default());
             app.manage(simulator::Simulators::default());
             app.manage(vm::Vms::default());
@@ -2953,6 +2963,16 @@ pub fn run() {
                 overlay::overlay_launch,
                 overlay::overlay_select_model,
                 overlay::overlay_open_task,
+                remote::remote_status,
+                remote::remote_sign_in_start,
+                remote::remote_sign_in_finish,
+                remote::remote_sign_in_cancel,
+                remote::remote_sign_out,
+                remote::remote_set_host_enabled,
+                remote::remote_devices,
+                remote::remote_revoke_device,
+                remote::remote_set_trusted,
+                remote::remote_call,
                 provider_settings::provider_configuration,
                 agent_usage::agent_usage,
                 usage_ledger::usage_ledger,

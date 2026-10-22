@@ -23,6 +23,8 @@ export async function subscribe(name: 'android-setup', callback: (event: import(
 export async function subscribe(name: 'cloud-setup', callback: (event: { provider: string; label: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'vm-changed', callback: (event: { show?: boolean } | string[] | null) => void): Promise<() => void>;
 export async function subscribe(name: 'simulator-changed', callback: (event: { udid: string; show: boolean }) => void): Promise<() => void>;
+export async function subscribe(name: 'remote://status', callback: (event: import('./remote-types').RemoteStatus) => void): Promise<() => void>;
+export async function subscribe(name: 'remote://presence', callback: (event: import('./remote-types').RemoteDevice[]) => void): Promise<() => void>;
 export async function subscribe(name: 'agent-event', callback: (event: AgentEvent) => void): Promise<() => void>;
 export async function subscribe(name: 'terminal-event', callback: (event: TerminalEvent) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-state', callback: (event: BrowserStatus) => void): Promise<() => void>;

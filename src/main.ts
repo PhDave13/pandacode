@@ -45,6 +45,8 @@ import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
 import { createThreadFind } from './thread-find';
+import { computersHtml } from './sidebar-computers';
+import type { RemoteDevice, RemoteHost, RemoteStatus } from './remote-types';
 import { botAvatar, botsBarHtml, botsListHtml, botsPanelHeadHtml, storedSidebarView, storeSidebarView, syncSeen, type SidebarView } from './sidebar-bots';
 import { connectAgentUiActions, type AgentUiAction } from './agent-ui-actions';
 import { createAgentInput, type AgentInput } from './agent-input';
@@ -69,7 +71,7 @@ import { initializeAgentUpdates } from './agent-updates';
 /* Visual thesis: calm surfaces, system typography, yellow selection, and bamboo details.
  * Content: project navigation → conversation → contextual source review.
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
-type WorkspaceView = 'conversation' | 'board' | 'github';
+type WorkspaceView = 'conversation' | 'board' | 'github' | 'remote';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
 type Stream = { text: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage };
 const state = {
@@ -265,12 +267,13 @@ $app.innerHTML = `<div class="workspace">
     <div id="navigation" class="navigation"></div>
     <div id="sidebar-note" class="sidebar-note" hidden></div>
     <section id="sidebar-bots-panel" class="bots-panel" aria-label="Bots"></section>
+    <div id="sidebar-computers" class="sidebar-computers" hidden></div>
     <div id="sidebar-bots" class="sidebar-bots"></div>
     <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="archive-view" id="archive-toggle" title="Archived tasks" aria-label="Archived tasks">${icon('archive')}</button><button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
     <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}<button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button><div class="view-switch" role="group" aria-label="Workspace view"><button data-action="conversation-view" aria-label="Conversation view" aria-pressed="true">${icon('chat')}<span>Conversation</span></button><button data-action="board-view" aria-label="Board view" aria-pressed="false">${icon('board')}<span>Board</span></button><button data-action="github-view" aria-label="GitHub view" aria-pressed="false">${icon('github')}<span>GitHub</span></button></div><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}<span class="header-divider" aria-hidden="true"></span>${button('moodboards', 'Project moodboards', 'images')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}<span class="header-divider" aria-hidden="true"></span>${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div></header>
-    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><div id="subagents-host" class="subagents-host" hidden></div><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div></section></div>
+    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section id="remote-view" aria-label="Remote computer" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><div id="subagents-host" class="subagents-host" hidden></div><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div></section></div>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
@@ -832,7 +835,7 @@ function renderNavigation(): void {
   if ((shownIcon?.outerHTML ?? '') !== filterIcon) { shownIcon?.remove(); if (filterIcon) filterLabel.insertAdjacentHTML('beforebegin', filterIcon); }
   const sidebarSessions = listedSessions().filter(s => s.archived === state.archived && (state.archived || taskStage(s) !== 'completed') && !botProjects.has(s.projectId));
   const visible = sidebarSessions.filter(s => (!state.projectFilter || s.projectId === state.projectFilter) && s.title.toLowerCase().includes(state.query.toLowerCase()));
-  renderBots();
+  renderBots(); renderComputers();
   $('#archive-toggle').classList.toggle('active', state.archived);
   $('#archive-toggle').setAttribute('aria-pressed', String(state.archived));
   const row = (s: Session, inFolder = false, inProject = false): string => {
@@ -1382,7 +1385,7 @@ function browserContextText(items: BrowserAttachment[]): string {
 }
 function renderBoardView(): void {
   if (state.view === 'github' && !githubEnabled()) state.view = 'conversation';
-  const board = state.view === 'board', hub = state.view === 'github';
+  const board = state.view === 'board', hub = state.view === 'github', remote = state.view === 'remote';
   $('.workspace').classList.toggle('board-view', board);
   $('.workspace').classList.toggle('github-view', hub);
   // A thread opened from GitHub sits beside it, laid out like the board's side panel.
@@ -1393,9 +1396,12 @@ function renderBoardView(): void {
   for (const [action, on] of [['board-view', board], ['conversation-view', state.view === 'conversation'], ['github-view', hub]] as const) document.querySelector(`[data-action="${action}"]`)!.setAttribute('aria-pressed', String(on));
   trackSegment($('.view-switch'), document.querySelector<HTMLElement>('.view-switch > [aria-pressed="true"]'));
   syncGithubHub(hub);
+  $('.workspace').classList.toggle('remote-view', remote);
+  $('#remote-view').hidden = !remote;
+  if (!remote) remoteView?.close();
   const pane = $('.conversation-pane');
   const paneWasHidden = pane.hidden;
-  pane.hidden = (hub || board) && !state.boardPanel;
+  pane.hidden = (hub || board || remote) && !state.boardPanel;
   if (paneWasHidden !== pane.hidden) { inspectorSuppressed = board && pane.hidden; renderInspector(); }
   subagents.setTask(state.sessionId, !pane.hidden);
   jevActivity.setTask(pane.hidden ? '' : state.sessionId);
@@ -2993,6 +2999,7 @@ async function showSettings(section?: import('./settings').SettingsSection): Pro
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },
+      remote: remoteHost,
       embed: {
         colors: async target => (await import('./theme-settings')).mountThemeSettings(target, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) }),
         wallpapers: async target => {
@@ -3232,6 +3239,36 @@ async function reloadBotProjects(withProjects = true): Promise<void> {
   renderNavigation(); renderHeader();
 }
 const userProjects = (): Project[] => state.projects.filter(project => !botProjects.has(project.id));
+/* PandaCode Connect. Status and devices are kept here for the sidebar; the views load lazily. */
+const remoteHost: RemoteHost = { call, listen: (name, callback) => subscribe(name as 'remote://status', callback), notify, openUrl: url => call('open_external_url', { url }) };
+let remoteDevices: RemoteDevice[] = [], remoteSignedIn = false, remoteView: import('./remote').RemoteView | undefined, remoteLoading: Promise<void> | undefined;
+function renderComputers(): void {
+  const host = document.querySelector<HTMLElement>('#sidebar-computers');
+  if (!host) return;
+  const html = remoteSignedIn ? computersHtml(remoteDevices) : '';
+  host.hidden = !html;
+  morph(host, html);
+}
+async function initRemote(): Promise<void> {
+  const refresh = async (status: RemoteStatus) => {
+    remoteSignedIn = status.signedIn;
+    remoteDevices = status.signedIn ? await call<RemoteDevice[]>('remote_devices').catch(() => remoteDevices) : [];
+    renderComputers();
+  };
+  await subscribe('remote://status', (status: RemoteStatus) => run(refresh(status)));
+  await subscribe('remote://presence', (devices: RemoteDevice[]) => { if (Array.isArray(devices)) { remoteDevices = devices; renderComputers(); remoteView?.presence(devices); } });
+  // A build without the Connect commands, or a signed-out one, simply shows no Computers.
+  const status = await call<RemoteStatus>('remote_status').catch(() => undefined);
+  if (status) await refresh(status);
+}
+/** Opens another computer's tasks full-width, like the GitHub view. */
+function openComputer(deviceId: string): void {
+  const device = remoteDevices.find(item => item.id === deviceId);
+  if (!device) return;
+  setWorkspaceView('remote');
+  remoteLoading ??= import('./remote').then(({ mountRemote }) => { remoteView = mountRemote($('#remote-view'), remoteHost); });
+  run(remoteLoading.then(() => remoteView?.open(device)));
+}
 /** The sidebar shows tasks or bots; the bar at its bottom switches between them. */
 let sidebarView: SidebarView = storedSidebarView();
 let botsQuery = '';
@@ -3360,6 +3397,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'bot-settings': if (element.dataset.bot) await showBotSettings(element.dataset.bot, element.dataset.tab as import('./bots').Section | undefined); break;
     case 'bot-pause': if (element.dataset.bot) { const bot = sidebarBots.find(item => item.id === element.dataset.bot); if (bot) { await call('bot_set_paused', { botId: bot.id, paused: !bot.paused }); notify(bot.paused ? `${bot.name} resumed` : `${bot.name} paused`); await reloadBotProjects(false); } } break;
     case 'open-bot': if (element.dataset.bot) await openBot(element.dataset.bot); break;
+    case 'open-computer': if (element.dataset.device) openComputer(element.dataset.device); break;
     case 'toggle-bots-view': setSidebarView(sidebarView === 'bots' ? 'tasks' : 'bots'); break;
     case 'import-conversations': await showConversationImport(); break;
     case 'agent-updates': await agentUpdates.show(); break;
@@ -3529,6 +3567,7 @@ async function boot(): Promise<void> {
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
   run(subscribe('simulator-changed', event => { if (event?.show) openSimulator(); void simulatorPanel?.refresh(); }).then(() => undefined));
   run(subscribe('bots-changed', () => run((async () => { botProjectsLoad = reloadBotProjects(); await botProjectsLoad; botsView?.refresh(); })())).then(() => undefined));
+  run(initRemote());
   run(subscribe('bot-notification', event => { if (event?.text) notify(String(event.text).replace(/\s+/g, ' ').slice(0, 160)); }).then(() => undefined));
   // Bots appear in the sidebar once loaded; startup does not wait for them.
   botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);

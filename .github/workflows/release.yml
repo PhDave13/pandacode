@@ -82,6 +82,10 @@ jobs:
           # build, but the release offers no automatic update.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Remote access (docs/remote-access.md). Public values, kept as repository variables;
+          # without them the build shows remote access as not configured.
+          PANDACODE_RELAY_URL: ${{ vars.PANDACODE_RELAY_URL }}
+          PANDACODE_GITHUB_CLIENT_ID: ${{ vars.PANDACODE_GITHUB_CLIENT_ID }}
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
