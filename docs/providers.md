@@ -610,6 +610,89 @@ directly. The recorded frames back the unit tests in `providers/cline.rs`, and
 an ignored smoke test (`live_cline_lists_models`) reads the real catalog without
 spending tokens.
 
+## Muse Code
+
+Muse Code (Meta's coding agent CLI, `muse`, installed by its launcher into
+`~/.local/bin`) has no ACP mode. Its machine interface is MSP, a newline-delimited
+JSON-RPC protocol served by `muse serve` over stdio, so `providers/muse.rs` is a
+native MSP client (the schema comes from `muse schema generate-ts --out DIR`). The
+launch line is `muse serve`, plus the sandbox flags below; `MUSE_LOGIN=0` keeps the
+launcher from starting a device login on PandaCode's pipes. MSP commands carry a
+client-minted UUIDv7 `commandId`; Muse refuses any other version.
+
+**Sign-in.** Muse keeps its own login (`muse login`, `~/.config/muse/auth.json`).
+Without it the turn ends `failed` with error kind `authRequired`, and PandaCode stops
+with “Muse Code is not signed in. Run `muse login` in a terminal, then send again.”
+
+**Session flow.** `initialize` (requesting the `sessionMcp` capability) →
+`initialized` → `session/start` with the workspace root, approval mode, model and
+PandaCode's tool server as a per-session `streamableHttp` MCP server, or
+`session/resume` with the saved MSP session ID followed by
+`session/setApprovalMode` and `session/setModel` (resume takes neither). The session
+ID is the task's resume ID. `turn/start` carries the prompt parts and the reasoning
+effort; starting or resuming subscribes the connection, so no `view/subscribe` is
+needed. A run ends at `turn/completed` for its turn, after Muse's blocking reminder
+agents finish (`turn/foregroundCompleted` comes earlier and is not the end).
+
+**Turn data.** `item/delta` (field `text`) streams `agentMessage` text and
+`item/completed` snapshots it (`messagePhase` `commentary` / `finalAnswer`).
+`reasoning` items show a Reasoning status. `toolCall`, `webSearch`, `subagent` and
+`userShell` items become tool activity with their arguments and visible output;
+`write_file`/`edit_file`/`apply_patch` arguments and `bash` calls feed change
+tracking. `session/contextUsage` reports context usage, and a turn that fails with a
+quota (`error.quota.resetsAtMs`) reports the usage limit and its reset time.
+Images ride the turn as `image` parts (`base64Data`, `mediaType`). A leading
+`/name` that matches `skill/list` is sent as a `skill` part with the rest as its
+arguments; the `/` menu lists those skills, read from a memory-only host
+(`muse serve --no-session-log`) in the task folder. Model discovery reads
+`model/list` the same way (models, their effort `variants`, default effort and
+context limit) and never prompts.
+
+**Approvals and questions.** `approval/request` and `userInput/request` are
+server requests: PandaCode acknowledges presentation at once (`{}`), then answers
+with `approval/decide` (the offered `approved` choice, or `denied`/`abort` to
+decline) or `userInput/answer` (an offered label as `selectedLabel`, anything else as
+`freeText`; an empty or stopped form sends `userInput/cancel`). Questions use the
+shared structured-input form. `approval/resolved` and `userInput/settled` close a
+prompt that Muse's LLM approval judge, a rule or another client settled first.
+
+**Steering and stop.** A mid-turn message goes to `turn/steer` with the running
+`expectedTurnId`. When the turn finishes before the model reads a steer, Muse runs it
+as its own turn (its `turnId` is the steer's `commandId`); the run stays open for that
+turn. Stop sends `turn/interrupt`, and the run ends at the cancelled `turn/completed`.
+
+**Approval modes.** Approval mode is selected on the wire; sandbox posture is fixed
+by process flags, so both are set for each run:
+
+| PandaCode | MSP approval mode | `muse serve` flags |
+| --- | --- | --- |
+| Standard | `promptUnmatched` | — (sandbox on, network proxy-only) |
+| Accept edits | `onRequest` | — |
+| Plan mode | `denyUnmatched` | `--disable-write --disable-shell` |
+| Full access | `allowAll` | `--disable-sandbox` |
+
+**What Muse cannot express.** Muse's LLM approval judge reviews prompt-bound calls
+before they reach PandaCode and approves those it considers safe; `muse serve` has no
+flag to turn it off (only `muse exec --approval-judge off`), so Standard and Accept
+edits show only the calls the judge escalates and sandbox escalations. Plan mode has
+no native equivalent: PandaCode makes the host read-only and prefixes the prompt with
+the plan instruction. Muse does not load a workspace's own skills and rules unless the
+workspace is trusted in Muse (PandaCode does not pass `--trust-workspace`). Account
+usage windows (`usage/read`) are known only inside a running host, so Agent usage
+shows Muse as unsupported. Subagent transcripts, goals, workflows, `/compact` and
+background tasks are not wired; `muse exec --json` is not used.
+
+**Console.** The harness console runs the Muse TUI (`muse resume <id>`) with
+`--approval-mode untrusted|on-request|never`, the same sandbox flags,
+`--disable-approval` for Full access, `--model` and `--reasoning-effort`.
+
+Verified against Muse Code 1.4.7 (launcher; the host reported 1.4.12) on 2026-10-22
+by driving `muse serve` directly. The recorded frames back the unit tests in
+`providers/muse.rs` and `slash_commands/muse.rs`; an ignored test
+(`installed_muse_catalog`) reads the real catalog without prompting, and
+`PANDACODE_SMOKE_PROVIDER=muse cargo test smoke_provider_from_env -- --ignored` runs
+two real turns (start, then resume).
+
 ## omp (Oh My Pi)
 
 omp (`omp`, from `@oh-my-pi/pi-coding-agent`, a Bun program) is a fork of Pi and

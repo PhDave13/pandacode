@@ -174,6 +174,8 @@ pub(super) fn stop_settled(provider: &str, value: &Value) -> bool {
         // Pi stays up after `abort`; settling is the end of the stopped run.
         "pi" => value["type"] == "agent_settled",
         "omp" => value["type"] == "prompt_result" || value["type"] == "session_settled",
+        // Muse ends an interrupted turn with `turn/completed` (terminal `cancelled`).
+        "muse" => value["method"] == "turn/completed",
         _ => false,
     }
 }

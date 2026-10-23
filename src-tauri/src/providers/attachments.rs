@@ -60,6 +60,8 @@ pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>
             "kimi" | "opencode" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" => {
                 json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)})
             }
+            // MSP TurnInputPart (`muse schema generate-ts`): an inline base64 image part.
+            "muse" => json!({"type":"image","mediaType":"image/png","base64Data":STANDARD.encode(&bytes)}),
             _ => return Err("This provider does not support screenshot attachments".into()),
         });
     }

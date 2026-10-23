@@ -21,7 +21,7 @@ fn codex_usage_limit(error: &Value) -> bool {
 }
 
 impl Protocol {
-    fn limited_event(&self, resets_at: Option<i64>, window: Option<&str>) -> AgentEvent {
+    pub(super) fn limited_event(&self, resets_at: Option<i64>, window: Option<&str>) -> AgentEvent {
         let label = match window {
             Some("five_hour") => "5-hour usage limit reached",
             Some("seven_day" | "seven_day_opus" | "seven_day_sonnet") => "Weekly usage limit reached",

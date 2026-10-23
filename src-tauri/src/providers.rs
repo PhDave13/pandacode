@@ -40,6 +40,7 @@ mod extra_models;
 mod github_copilot;
 mod glm;
 mod mimo;
+mod muse;
 mod deepseek;
 mod kimi_models;
 mod launch;
@@ -66,7 +67,7 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-const PROVIDERS: [(&str, &str); 14] = [
+const PROVIDERS: [(&str, &str); 15] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -81,6 +82,7 @@ const PROVIDERS: [(&str, &str); 14] = [
     ("cline", "Cline"),
     ("omp", "Oh My Pi"),
     ("github-copilot", "GitHub Copilot CLI"),
+    ("muse", "Muse Code"),
 ];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
@@ -453,7 +455,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
@@ -469,6 +471,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
         }
         ("pi" | "omp", Some(value)) => ["off", "minimal", "low", "medium", "high", "xhigh"].contains(&value),
         ("kimi", Some(value)) => ["on", "off"].contains(&value),
+        ("muse", Some(value)) => muse::valid_effort(value),
         _ => false,
     };
     if valid {
@@ -537,6 +540,11 @@ pub(crate) fn opencode_configuration(mode: &str) -> String {
 /// The saved Command Code key for discovery paths that build their own process.
 pub(crate) fn commandcode_key_environment(command: &mut Command) -> Option<String> {
     commandcode::key_environment(command)
+}
+
+/// Muse Code's process sandbox flags for a PandaCode mode, shared with its console.
+pub(crate) fn muse_sandbox_args(mode: &str) -> &'static [&'static str] {
+    muse::sandbox_args(mode)
 }
 
 pub(crate) fn grok_permission_mode(mode: &str) -> &'static str {
@@ -683,7 +691,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" | "muse"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -711,6 +719,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "commandcode" => commandcode::models(&path).await,
         "cline" => cline::models(&path).await,
         "github-copilot" => github_copilot::models(&path).await,
+        "muse" => muse::models(&path).await,
         _ => unreachable!(),
     }
 }
@@ -1051,6 +1060,7 @@ struct Protocol {
     kimi_message_id: String,
     kimi_resume: bool,
     pi: pi::State,
+    muse: muse::State,
     // ACP may publish commands before session/new responds. Keep at most one
     // small frame until the response confirms which session owns it.
     early_kimi_commands: Option<Vec<u8>>,
@@ -1179,6 +1189,7 @@ impl Protocol {
             kimi_message_id: String::new(),
             kimi_resume: false,
             pi: pi::State::default(),
+            muse: muse::State::default(),
             early_kimi_commands: None,
             tools: HashMap::new(),
             file_write_tools: HashSet::new(),
@@ -1258,7 +1269,7 @@ impl Protocol {
         // not retain a second copy for the rest of a potentially long turn.
         let mut content = std::mem::take(&mut self.image_blocks);
         let mut text = std::mem::take(&mut self.config.prompt);
-        if matches!(self.config.provider.as_str(), "grok" | "deepseek") && self.config.mode == "plan" && !text.trim().is_empty() {
+        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse") && self.config.mode == "plan" && !text.trim().is_empty() {
             text = format!("{}\n\n{text}", acp::GROK_PLAN_PREFIX);
         }
         if !text.trim().is_empty() {
@@ -1627,6 +1638,7 @@ impl Protocol {
     fn initial(&self) -> Value {
         match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"get_state","id":"pandacode-init"}),
+            "muse" => self.muse_initial(),
             "codex" => {
                 let mut request = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pandacode","title":"PandaCode","version":"0.1.0"}}});
                 request["params"]["capabilities"] =
@@ -1653,6 +1665,13 @@ impl Protocol {
         Ok(())
     }
     fn approve(&mut self, id: &str, approved: bool) -> Option<Value> {
+        if self.config.provider == "muse" {
+            // Muse decides only with a choice it offered; keep the prompt when none fits.
+            let request = self.pending.get(id)?.clone();
+            let decision = self.muse_decide(&request, approved)?;
+            self.pending.remove(id);
+            return Some(decision);
+        }
         let request = self.pending.remove(id)?;
         Some(match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved}),
@@ -1688,6 +1707,7 @@ impl Protocol {
     fn cancel(&self) -> Value {
         match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"abort"}),
+            "muse" => self.muse_cancel(),
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
@@ -1720,6 +1740,7 @@ impl Protocol {
             "codex" => self.codex(value).map(|step| self.steered(step)),
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
+            "muse" => self.muse(value),
             "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => self.acp(value),
             _ => self.claude(value),
         }
@@ -2653,6 +2674,7 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             command.args(["app-server", "--enable", "goals"]);
         }
         "pi" | "omp" => pi::configure(command, config),
+        "muse" => muse::configure(command, config),
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" => acp::configure(command, config),
         "github-copilot" => acp::configure(command, config),
         "kimi" => {
@@ -2731,6 +2753,7 @@ async fn run_inner(
         "cline",
         "omp",
         "github-copilot",
+        "muse",
     ]
     .contains(&config.provider.as_str())
     {
@@ -2889,7 +2912,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot",
+            | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse",
             Some(host),
         ) => (
             None,
@@ -2966,7 +2989,7 @@ async fn run_process_with_tools(
                         Some(RunInput::Steer{id,text,reply})=>{let step=protocol.steer(id,text,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
                         Some(RunInput::Approval{request_id,approved})=>{if !mcp.as_ref().is_some_and(|server|server.approve(&request_id,approved)) {let step=protocol.approval_step(&request_id,approved); apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;}},
                         Some(RunInput::UserInput{request_id,response,reply})=>{
-                            match protocol.user_input(&request_id,response) {
+                            match if protocol.config.provider=="muse" {protocol.muse_user_input(&request_id,response)} else {protocol.user_input(&request_id,response)} {
                                 Ok(step)=>{let result=apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await.map(|_|());if let Some(reply)=reply {let _=reply.send(result.clone());}result?;},
                                 Err(error)=>{if let Some(reply)=reply {let _=reply.send(Err(error));}},
                             }
@@ -4320,9 +4343,9 @@ mod tests {
     async fn smoke_provider_from_env() {
         use std::sync::Mutex;
         let provider = std::env::var("PANDACODE_SMOKE_PROVIDER")
-            .expect("Set PANDACODE_SMOKE_PROVIDER to claude, codex, or kimi");
+            .expect("Set PANDACODE_SMOKE_PROVIDER to claude, codex, kimi or muse");
         let model = std::env::var("PANDACODE_SMOKE_MODEL").unwrap_or_else(|_| "default".into());
-        assert!(["claude", "codex", "kimi"].contains(&provider.as_str()));
+        assert!(["claude", "codex", "kimi", "muse"].contains(&provider.as_str()));
         let root =
             std::env::temp_dir().join(format!("pandacode-provider-smoke-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();

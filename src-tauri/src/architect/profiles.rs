@@ -40,6 +40,7 @@ impl ModelSelection {
             "cline",
             "omp",
             "github-copilot",
+            "muse",
         ]
         .contains(&self.provider.as_str())
             || self.model.len() > 200

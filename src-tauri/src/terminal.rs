@@ -281,7 +281,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
     if provider == "antigravity" {
         return Err("Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.".into());
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot") {
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse") {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -320,7 +320,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
     if let Some(id) = resume_id {
         args.push(
             match provider {
-                "codex" => "resume",
+                "codex" | "muse" => "resume",
                 "claude" | "glm" | "mimo" | "grok" => "--resume",
                 _ => "--session",
             }
@@ -362,6 +362,19 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             if context.mode == "full" {
                 args.push("--allow-dangerously-skip-permissions".into());
             }
+        }
+        "muse" => {
+            // The TUI's flags: approval policy plus the same sandbox posture as task runs.
+            let approval = match context.mode {
+                "auto" => "on-request",
+                "full" => "never",
+                _ => "untrusted",
+            };
+            args.extend(["--approval-mode".into(), approval.into()]);
+            if context.mode == "full" {
+                args.push("--disable-approval".into());
+            }
+            args.extend(crate::providers::muse_sandbox_args(context.mode).iter().map(|arg| (*arg).into()));
         }
         "opencode" => {
             args.extend([
@@ -416,6 +429,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             "claude" | "glm" | "mimo" => args.extend(["--effort".into(), effort.into()]),
             "grok" => args.extend(["--reasoning-effort".into(), effort.into()]),
             "pi" | "omp" => args.extend(["--thinking".into(), effort.into()]),
+            "muse" => args.extend(["--reasoning-effort".into(), effort.into()]),
             _ => {} // The Kimi TUI restores its persisted thinking setting.
         }
     }
@@ -941,6 +955,26 @@ mod tests {
             assert!(harness_arguments(&HarnessContext { mode, ..context }).unwrap_err().contains("Full access"));
         }
         assert!(harness_arguments(&HarnessContext { reasoning_effort: Some("max"), ..context }).is_err());
+    }
+
+    #[test]
+    fn muse_console_resumes_with_the_task_mode_model_and_effort() {
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "muse",
+            resume_id: Some("01a16681-4036-7383-ab96-9dd8865524d8"),
+            model: Some("muse-spark-1.3"),
+            reasoning_effort: Some("low"),
+            mode: "plan",
+        };
+        let args = harness_arguments(&context).unwrap();
+        assert_eq!(&args[..2], &["resume", "01a16681-4036-7383-ab96-9dd8865524d8"]);
+        for pair in [["--approval-mode", "untrusted"], ["--model", "muse-spark-1.3"], ["--reasoning-effort", "low"]] {
+            assert!(args.windows(2).any(|args| args == pair), "{args:?}");
+        }
+        assert!(args.contains(&"--disable-write".to_owned()) && args.contains(&"--disable-shell".to_owned()));
+        let full = harness_arguments(&HarnessContext { mode: "full", resume_id: None, ..context }).unwrap();
+        assert!(full.contains(&"--disable-approval".to_owned()) && full.contains(&"--disable-sandbox".to_owned()));
     }
 
     #[test]

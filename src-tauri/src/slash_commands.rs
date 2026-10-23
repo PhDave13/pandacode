@@ -3,6 +3,7 @@ mod acp;
 pub(crate) mod claude;
 mod codex;
 mod kimi;
+mod muse;
 mod pi;
 
 use serde::Serialize;
@@ -328,6 +329,7 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "commandcode" | "cline"
             | "omp"
             | "github-copilot"
+            | "muse"
     ) {
         return Err("Unknown harness.".into());
     }
@@ -357,6 +359,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
             "codex" => codex::discover(cwd).await,
             "kimi" => kimi::discover(cwd).await,
             "pi" | "omp" => pi::discover(provider, cwd).await,
+            "muse" => muse::discover(cwd).await,
             _ => unreachable!(),
         };
         let committed = CACHE
