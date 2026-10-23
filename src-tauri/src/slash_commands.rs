@@ -177,7 +177,7 @@ impl CommandCache {
                 // Process output stays behind the generic message.
                 let warning = if key.0 == "kimi" && error == kimi::AUTH_REQUIRED {
                     kimi::AUTH_REQUIRED
-                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "github-copilot")
+                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "github-copilot")
                     && error.starts_with(crate::providers::acp::ACP_STARTUP_TIMEOUT)
                 {
                     crate::providers::acp::ACP_STARTUP_TIMEOUT
@@ -325,7 +325,7 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "mimo"
             | "pi"
             | "deepseek"
-            | "commandcode"
+            | "commandcode" | "cline"
             | "omp"
             | "github-copilot"
     ) {
@@ -350,7 +350,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
         let discovered = match provider {
             "claude" => claude::discover(cwd).await,
             "glm" | "mimo" => claude::discover_for(provider, cwd).await,
-            "opencode" | "antigravity" | "grok" | "commandcode" | "github-copilot" => {
+            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "github-copilot" => {
                 acp::discover(provider, cwd).await
             }
             "deepseek" => Ok(Catalog::default()),
@@ -385,7 +385,7 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
     }
     let value = match provider {
         "claude" | "glm" | "mimo" => claude::parse_runtime(data),
-        "opencode" | "antigravity" | "grok" | "commandcode" | "github-copilot" => acp::parse_runtime(provider, data),
+        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "github-copilot" => acp::parse_runtime(provider, data),
         "kimi" => kimi::parse_runtime(data),
         _ => None,
     };

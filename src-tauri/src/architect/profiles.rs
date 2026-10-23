@@ -37,6 +37,7 @@ impl ModelSelection {
             "pi",
             "deepseek",
             "commandcode",
+            "cline",
             "omp",
             "github-copilot",
         ]

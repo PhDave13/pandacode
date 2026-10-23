@@ -34,6 +34,7 @@ mod claude_stream_tests;
 mod codex_stream_tests;
 #[cfg(all(test, unix))]
 pub(crate) mod concurrent_process_tests;
+mod cline;
 mod commandcode;
 mod extra_models;
 mod github_copilot;
@@ -65,7 +66,7 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-const PROVIDERS: [(&str, &str); 13] = [
+const PROVIDERS: [(&str, &str); 14] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -77,6 +78,7 @@ const PROVIDERS: [(&str, &str); 13] = [
     ("pi", "Pi"),
     ("deepseek", "DeepSeek"),
     ("commandcode", "Command Code"),
+    ("cline", "Cline"),
     ("omp", "Oh My Pi"),
     ("github-copilot", "GitHub Copilot CLI"),
 ];
@@ -449,14 +451,14 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
             ["low", "medium", "high", "xhigh", "max"].contains(&value)
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
-        ("codex" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode", Some(value)) => {
+        ("codex" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline", Some(value)) => {
             !value.is_empty()
                 && value.len() <= 64
                 && value
@@ -679,7 +681,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -705,6 +707,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "pi" | "omp" => pi::models(&path, provider).await,
         "deepseek" => deepseek::models(&path).await,
         "commandcode" => commandcode::models(&path).await,
+        "cline" => cline::models(&path).await,
         "github-copilot" => github_copilot::models(&path).await,
         _ => unreachable!(),
     }
@@ -1626,7 +1629,7 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
@@ -1658,7 +1661,7 @@ impl Protocol {
                 };
                 json!({"id":request["id"],"result":result})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -1684,7 +1687,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -1713,7 +1716,7 @@ impl Protocol {
             "codex" => self.codex(value),
             "kimi" => self.kimi(value),
             "pi" | "omp" => self.pi(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2635,7 +2638,7 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             command.args(["app-server", "--enable", "goals"]);
         }
         "pi" | "omp" => pi::configure(command, config),
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" => acp::configure(command, config),
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" => acp::configure(command, config),
         "github-copilot" => acp::configure(command, config),
         "kimi" => {
             if use_model {
@@ -2710,6 +2713,7 @@ async fn run_inner(
         "pi",
         "deepseek",
         "commandcode",
+        "cline",
         "omp",
         "github-copilot",
     ]
@@ -2870,7 +2874,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "omp" | "github-copilot",
+            | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot",
             Some(host),
         ) => (
             None,

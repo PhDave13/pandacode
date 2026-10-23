@@ -570,6 +570,46 @@ directly; the recorded frames back the unit tests in `providers/commandcode.rs`,
 an ignored smoke test (`live_command_code_lists_models`) reads the real catalog
 without spending tokens.
 
+## Cline
+
+Cline (`cline`, installed with `npm i -g cline`) exposes ACP v1 with
+`cline --acp`, so PandaCode drives it with the shared ACP adapter. The npm package's
+`bin/cline` is a Node launcher for a bundled native binary. On Windows the npm
+`cline.cmd` shim resolves to that declared entry.
+
+**Sign-in.** Cline keeps its own sign-in (`cline auth`: Cline, ClinePass or a ChatGPT
+subscription), or reads `CLINE_API_KEY` from the environment. Without either,
+`session/new` fails with ACP `-32000` (“Authentication required: Call authenticate
+before starting a session”), and the turn stops with “Cline is not signed in. Run
+`cline auth` in a terminal, then send again.” PandaCode never starts Cline's browser
+OAuth itself.
+
+**Models and effort.** `session/new` returns `configOptions` (`provider`, `model`,
+`mode`, boolean `auto_approve`), so discovery opens an empty session and never
+prompts. The `provider` option shares the model category, so the adapter matches
+options by ID first. There is no ACP effort option. The effort is the launch flag
+`--thinking none|low|medium|high|xhigh`, offered for every model.
+
+**Approvals.** See [approvals](approvals.md): Plan → `plan`, everything else → `act`.
+Full access adds `--auto-approve true`.
+
+**Turn data.** Streaming text, thoughts, tool calls with `rawInput`/`rawOutput`,
+cancel and `session/load` (resume) use the common ACP paths. Cline can load a
+session only after it has received a prompt. It has no `session/resume`.
+
+**Not available from Cline's ACP server (3.0.73).** Images: `image: true` is
+advertised, but the prompt keeps only text blocks, so screenshots are sent as
+file paths that its `read_files` tool opens. Cline ignores the ACP `mcpServers`
+list and does not advertise HTTP MCP, so PandaCode tools (titles, run/preview,
+team tools) are unavailable, and a task that requires them fails at startup.
+There are also no `available_commands_update` (slash commands), no `usage_update`
+(context meter) and no usage limits. Mid-turn messages stay queued.
+
+Verified against `cline` 3.0.73 on 2026-10-22 by driving `cline --acp`
+directly. The recorded frames back the unit tests in `providers/cline.rs`, and
+an ignored smoke test (`live_cline_lists_models`) reads the real catalog without
+spending tokens.
+
 ## omp (Oh My Pi)
 
 omp (`omp`, from `@oh-my-pi/pi-coding-agent`, a Bun program) is a fork of Pi and
