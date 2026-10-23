@@ -786,9 +786,18 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'steer_task': {
       const s = session(args.sessionId);
       if (!timers.has(s.id) && s.status !== 'running') throw new Error('The agent is not running; the message stays queued.');
-      if (!['claude', 'glm', 'mimo', 'codex'].includes(s.provider)) throw new Error('This agent cannot be steered mid-turn; the message stays queued.');
-      (messages[s.id] ??= []).push({ id: ++id, sessionId: s.id, role: 'user', content: String(args.text).trim(), createdAt: Date.now() });
-      result = null; break;
+      // Claude-family, Codex and Pi take it live; others hold it for the next turn of the same run.
+      const text = String(args.text).trim(), steerId = `steer-${++id}`;
+      const mode = ['claude', 'glm', 'mimo', 'codex', 'pi'].includes(s.provider) ? 'live' : 'next-turn';
+      const report = (status: string) => agent({ sessionId: s.id, kind: 'steer' as AgentEvent['kind'], text, data: { id: steerId, status, mode } });
+      window.setTimeout(() => report('pending'));
+      window.setTimeout(() => {
+        // Test hook: a steer whose text mentions this fails, as when the process exits before taking it.
+        if (text.includes('[steer-fails]')) return report('failed');
+        (messages[s.id] ??= []).push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
+        report('delivered');
+      }, mode === 'live' ? 900 : 1500);
+      result = { steered: true, id: steerId, mode }; break;
     }
     case 'list_importable_conversations': {
       const query = String(args.search ?? '').toLowerCase();

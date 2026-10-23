@@ -187,14 +187,13 @@ pub(super) struct State {
     held_state: Option<Value>,
     /// Latest assistant failure. A successful retry or answer clears it.
     error: Option<String>,
-    settled: bool,
+    pub(super) settled: bool,
     /// omp's `prompt_result` outcome, held until the session settles.
     prompt_result: Option<Value>,
-    steers: HashMap<String, RpcReply>,
+    /// Unanswered `steer` commands: wire id -> (steer id, text, reply).
+    pub(super) steers: HashMap<String, (String, String, RpcReply)>,
     steer_sequence: u64,
 }
-
-const MAX_PENDING_STEERS: usize = 16;
 
 impl Protocol {
     pub(super) fn pi(&mut self, value: Value) -> Result<Step, String> {
@@ -203,6 +202,10 @@ impl Protocol {
             "response" => self.pi_response(value, &mut step)?,
             "message_start" if value["message"]["role"] == "assistant" => {
                 self.claude_message_id = self.next_text_id();
+            }
+            // Pi takes a queued steer as a user message before its next model call.
+            "message_start" if value["message"]["role"] == "user" => {
+                self.steers_consumed(&value["message"]["content"], &mut step);
             }
             "message_update" => {
                 let event = &value["assistantMessageEvent"];
@@ -369,12 +372,11 @@ impl Protocol {
 
     fn pi_response(&mut self, value: Value, step: &mut Step) -> Result<(), String> {
         let id = field(&value, "id");
-        if let Some(reply) = self.pi.steers.remove(id) {
-            let _ = reply.send(if value["success"] == true {
-                Ok(json!({"steered": true}))
-            } else {
-                Err(short(field(&value, "error")))
-            });
+        if let Some((steer, text, reply)) = self.pi.steers.remove(id) {
+            // Refused (e.g. not streaming any more): it becomes the next turn instead.
+            let mode = if value["success"] == true { "live" } else { "next-turn" };
+            self.accept(steer, text, mode, reply, step);
+            self.steer_answered(step);
             return Ok(());
         }
         if id == "pandacode-usage" {
@@ -467,21 +469,17 @@ impl Protocol {
         Ok(())
     }
 
-    pub(super) fn pi_steer(&mut self, text: String, reply: RpcReply) -> Step {
+    pub(super) fn pi_steer(&mut self, id: String, text: String, reply: RpcReply) -> Step {
         let mut step = Step::default();
         if self.phase == 0 || self.pi.settled {
-            let _ = reply.send(Err("The agent has no active turn to steer.".into()));
-            return step;
-        }
-        if self.pi.steers.len() >= MAX_PENDING_STEERS {
-            let _ = reply.send(Err("Too many steering messages are waiting.".into()));
+            self.accept(id, text, "next-turn", reply, &mut step);
             return step;
         }
         self.pi.steer_sequence += 1;
-        let id = format!("pandacode-steer-{}", self.pi.steer_sequence);
+        let request = format!("pandacode-steer-{}", self.pi.steer_sequence);
         step.write
-            .push(json!({"type":"steer","id":id,"message":text}));
-        self.pi.steers.insert(id, reply);
+            .push(json!({"type":"steer","id":request,"message":text}));
+        self.pi.steers.insert(request, (id, text, reply));
         step
     }
 }

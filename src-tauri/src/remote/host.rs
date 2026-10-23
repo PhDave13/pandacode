@@ -263,8 +263,7 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
         }
         Call::Steer { session_id, text } => {
             local_task(&state, &session_id)?;
-            message_queue::steer_task(app.clone(), state, session_id, text).await?;
-            Ok(json!({}))
+            message_queue::steer_task(app.clone(), state, session_id, text).await
         }
         Call::Configure { session_id, model, effort, mode } => {
             local_task(&state, &session_id)?;

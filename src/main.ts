@@ -12,7 +12,7 @@ import './message-queue.css';
 import './usage-limit.css';
 import './document-viewer.css';
 import { renderDocument, setDocumentView } from './document-viewer';
-import { canSteer, moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
+import { moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
 import { cascade, enterView, glideIn, glideOut, hideToast, installDialogMotion, publishSpringEasings, revealIn, showToast, trackSegment } from './motion';
 import { updateTeamProgress } from './team-progress';
@@ -1155,7 +1155,7 @@ function messageHtml(m: Message): string {
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content) : escape(m.content)}</div>${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'))}</article>`;
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'))}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) folds
 // behind one summary so the transcript reads as what you said, with the payload a click away.
@@ -1379,11 +1379,11 @@ function renderComposer(): void {
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning(), behavior = approvalMode(s.provider, s.mode);
   const team = teams.get(s.id), modelLocked = running && !team;
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (canSteer(s.provider) ? 'Queue a follow-up · ⌘↩ steers now' : 'Queue a follow-up…') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${canSteer(s.provider) ? ' Command Enter to steer the running turn.' : ''}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running ? '<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="Stop task">' + icon('stop') + '</button>' : '<button type="submit" class="send-button" title="Send message (' + shortcut('Enter') + ')" aria-label="Send message">' + icon('arrow') + '</button>'}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${running ? '<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="Stop task">' + icon('stop') + '</button>' : '<button type="submit" class="send-button" title="Send message (' + shortcut('Enter') + ')" aria-label="Send message">' + icon('arrow') + '</button>'}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', (running ? '' : limitBanner(s)) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: canSteer(s.provider) && !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id) }));
+  $('#composer').insertAdjacentHTML('beforebegin', (running ? '' : limitBanner(s)) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued }));
   renderApprovalBar(); resizePrompt();
   void github.status(s.projectId);
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -1405,7 +1405,7 @@ function renderComposer(): void {
       load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }),
       select: () => state.drafts.set(s.id, prompt.value),
     });
-    const enter = running ? `Enter to queue for when the agent finishes.${canSteer(s.provider) && !team ? ' Command Enter to steer the running turn.' : ''}` : 'Enter to send.';
+    const enter = running ? `Enter to queue for when the agent finishes.${!team ? ' Command Enter to steer the running turn.' : ''}` : 'Enter to send.';
     prompt.setAttribute('aria-description', `${enter} Shift Enter for a new line. Type @ to mention a project file${github.connected(s.projectId) ? ', issue, or pull request' : ''}.`);
     fileMentionPicker = mountFileMentions(prompt, {
       contextKey: () => `${state.sessionId}:${workspacePath()}:${github.connected(s.projectId)}`,
@@ -2011,23 +2011,57 @@ function restoreComposer(s: Session, text: string, promptItems: ReturnType<typeo
   if (promptItems.length) attachments.restore(s.id, promptItems);
   if (paths.length && s.id === state.sessionId) state.attachments = [...new Set([...paths, ...state.attachments])];
 }
-function showSteered(s: Session, text: string): void {
+type SteerMode = 'live' | 'next-turn';
+type SteerStatus = 'pending' | 'delivered' | 'failed';
+interface Steer { sessionId: string; text: string; mode: SteerMode; status: SteerStatus; messageId?: number }
+/** Steers by native id. Events can arrive before `steer_task` resolves, so either side may create the entry. */
+const steers = new Map<string, Steer>();
+/** Queue entries whose steer is in flight. */
+const steeringQueued = new Set<string>();
+/** Sends text into the running turn and shows it at once as a pending user message. */
+async function steer(s: Session, text: string): Promise<void> {
+  const result = await call<{ id?: string; mode?: SteerMode } | null>('steer_task', { sessionId: s.id, text });
+  const messageId = transientId--, known = result?.id ? steers.get(result.id) : undefined;
+  if (result?.id) steers.set(result.id, { sessionId: s.id, text, mode: known?.mode ?? result.mode ?? 'live', status: known?.status ?? 'pending', messageId });
   if (s.id !== state.sessionId) return;
-  state.messages = [...state.messages, { id: transientId--, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() }]; renderTranscript(true);
+  state.messages = [...state.messages, { id: messageId, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() }]; renderTranscript(true);
+}
+function steerEvent(event: AgentEvent): void {
+  const data = event.data as { id?: string; status?: SteerStatus; mode?: SteerMode } | undefined;
+  if (!data?.id || !data.status) return;
+  const known = steers.get(data.id);
+  if (known?.status === 'failed') return;
+  steers.set(data.id, { sessionId: event.sessionId, text: event.text, ...known, mode: data.mode ?? known?.mode ?? 'live', status: data.status });
+  if (data.status === 'failed') void requeueSteer(event.sessionId, event.text || known?.text || '');
+  if (event.sessionId === state.sessionId && known?.messageId !== undefined) renderTranscript(true);
+}
+/** A steer the agent could not take goes back to the queue, so nothing typed is lost. */
+async function requeueSteer(sessionId: string, text: string): Promise<void> {
+  if (!text) return;
+  const entry = await call<QueuedMessage>('queue_add', { sessionId, text, attachments: [] }).catch(() => null);
+  const s = state.sessions.find(item => item.id === sessionId);
+  if (entry) { setQueue(sessionId, [...queueOf(sessionId), entry]); notify('The agent could not take that message, so it was queued.'); }
+  else { if (s) restoreComposer(s, text, [], []); notify('The agent could not take that message; it is back in the prompt.'); }
+  if (sessionId === state.sessionId) renderComposer();
+}
+function steerStateHtml(m: Message): string {
+  const steer = [...steers.values()].find(item => item.messageId === m.id && item.status !== 'delivered');
+  if (!steer) return '';
+  if (steer.status === 'failed') return `<div class="steer-state failed">${icon('alert')}<span>Not taken by the agent · moved to the queue</span></div>`;
+  return `<div class="steer-state" role="status"><span class="support-spinner" aria-hidden="true"></span><span>${steer.mode === 'next-turn' ? 'Sends when this turn ends' : 'Steering…'}</span></div>`;
 }
 /** Sends the composer's text into the running turn; anything that cannot steer is queued instead. */
 async function steerFromComposer(): Promise<void> {
   const s = session(); if (!s) return;
   const { text, items } = composerPayload(s);
-  if (!text) return;
-  if (items.length || !canSteer(s.provider) || teams.get(s.id)) {
-    notify(items.length ? 'Attachments travel with queued messages, so this one was queued.' : 'This agent cannot take messages mid-turn, so this one was queued.');
+  if (!text) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
+  if (items.length || teams.get(s.id)) {
+    notify(items.length ? 'Attachments travel with queued messages, so this one was queued.' : 'A team takes messages between runs, so this one was queued.');
     return enqueueFromComposer();
   }
   clearComposer(s); renderComposer();
   try {
-    await call('steer_task', { sessionId: s.id, text });
-    showSteered(s, text);
+    await steer(s, text);
   } catch (error) {
     // Not taken mid-turn: keep it for after the run instead of losing it.
     notify(`${error instanceof Error ? error.message : String(error)} Queued instead.`);
@@ -2036,12 +2070,15 @@ async function steerFromComposer(): Promise<void> {
     if (s.id === state.sessionId) renderComposer();
   }
 }
-async function steerQueued(id: string): Promise<void> {
-  const s = session(); const entry = s && queueOf(s.id).find(item => item.id === id); if (!s || !entry) return;
+/** Steers a queued entry; it leaves the queue only once the running turn has taken it. */
+async function steerQueued(s: Session, id: string): Promise<void> {
+  const entry = queueOf(s.id).find(item => item.id === id); if (!entry || steeringQueued.has(id)) return;
   if (entry.attachments.length) { notify('Queued messages with attachments are sent after the run.'); return; }
-  await call('steer_task', { sessionId: s.id, text: entry.text });
-  await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id));
-  renderComposer(); showSteered(s, entry.text);
+  steeringQueued.add(id); renderComposer();
+  try {
+    await steer(s, entry.text);
+    await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id));
+  } finally { steeringQueued.delete(id); if (s.id === state.sessionId) renderComposer(); }
 }
 async function saveQueueEdit(): Promise<void> {
   const s = session(); const entry = s && queueOf(s.id).find(item => item.id === state.queueEditing); if (!s || !entry) return;
@@ -2052,7 +2089,7 @@ async function saveQueueEdit(): Promise<void> {
 async function queueAction(action: string, element: HTMLElement): Promise<void> {
   const s = session(); if (!s) return;
   const id = element.closest<HTMLElement>('[data-queue-id]')?.dataset.queueId ?? '';
-  if (action === 'queue-steer') return steerQueued(id);
+  if (action === 'queue-steer') return steerQueued(s, id).catch(error => { if (!isRunning(s.id)) run(dispatchQueue(s.id)); throw error; });
   if (action === 'queue-send-now') return sendQueuedNow(s, id);
   if (action === 'queue-edit') { state.queueEditing = id; renderComposer(); document.querySelector<HTMLTextAreaElement>('.queue-edit')?.focus(); return; }
   if (action === 'queue-cancel') { state.queueEditing = ''; renderComposer(); return; }
@@ -2061,10 +2098,16 @@ async function queueAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'queue-up' || action === 'queue-down') { setQueue(s.id, await call<QueuedMessage[]>('queue_reorder', { sessionId: s.id, ids: moved(queueOf(s.id), id, action === 'queue-up' ? -1 : 1) })); renderComposer(); return; }
   if (action === 'queue-resume') { state.queueHolds.delete(s.id); renderComposer(); await dispatchQueue(s.id); }
 }
-/** Sends this entry next: right away when idle, otherwise after stopping the run (as the Stop button does). */
+/** Sends this entry now: right away when idle, into the running turn when it can steer, otherwise after stopping the run. */
 async function sendQueuedNow(s: Session, id: string): Promise<void> {
-  if (!queueOf(s.id).some(item => item.id === id)) return;
+  const entry = queueOf(s.id).find(item => item.id === id); if (!entry) return;
   if (!isRunning(s.id)) { sendFirst.set(s.id, { id }); return dispatchQueue(s.id); }
+  if (!teams.get(s.id) && !entry.attachments.length) {
+    try { return await steerQueued(s, id); } catch {
+      // The run ended meanwhile: send it as the next turn instead.
+      if (!isRunning(s.id)) return sendQueuedNow(s, id);
+    }
+  }
   sendFirst.set(s.id, { id, stopping: true, hold: state.queueHolds.get(s.id) });
   runEndings.set(s.id, 'stopped');
   const team = teams.get(s.id);
@@ -2078,7 +2121,7 @@ async function dispatchQueue(id: string): Promise<void> {
   const task = state.sessions.find(item => item.id === id);
   const first = sendFirst.get(id), next = queueOf(id).find(item => item.id === first?.id) ?? queueOf(id)[0];
   if (first && next?.id !== first.id) sendFirst.delete(id);
-  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
+  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
   if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
   try {
@@ -2332,6 +2375,8 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'turn_start') return;
   if (event.kind === 'commands_changed') { if (event.sessionId === state.sessionId) slashPicker?.refresh(true); return; }
   if (event.kind === 'subagent') { subagents.receive(event.sessionId, event.data); return; }
+  // Native reports each steer's pending, delivered or failed state.
+  if (event.kind === 'steer') { steerEvent(event); return; }
   const s = state.sessions.find(s => s.id === event.sessionId);
   if (event.kind === 'usage') {
     const usage = parseContextUsage(event.data);
@@ -2346,6 +2391,7 @@ function onAgent(event: AgentEvent): void {
     if (s) refreshFileLinks(workspaceContext(s));
     void detectPullRequest(event.sessionId);
     if (s && botProjects.has(s.projectId)) void refreshBotPreviews();
+    for (const [id, item] of steers) if (item.sessionId === event.sessionId) steers.delete(id);
     const finishing = { stream: state.streams.get(event.sessionId) ?? stream(event.sessionId), finishedAt: Date.now() };
     clearAgentInputs(finishing.stream);
     finishingStreams.set(event.sessionId, finishing);
@@ -3594,6 +3640,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     }
     case 'architect-setup': await showArchitectSetup(element); break;
     case 'team-toggle': await toggleTeam(); break;
+    case 'steer': await steerFromComposer(); break;
     case 'stop': if (session()) { runEndings.set(state.sessionId, 'stopped'); await call(teams.get(state.sessionId) ? 'architect_control' : 'stop_session', { sessionId: state.sessionId, ...(teams.get(state.sessionId) ? { action: 'stop' } : {}) }); notify('Stopping task…'); } break;
     case 'approval-allow': case 'approval-deny': await respondApproval(state.sessionId, element.dataset.request!, name === 'approval-allow'); break;
     case 'approval-allow-all': case 'approval-deny-all': { const sessionId = state.sessionId; for (const id of [...state.streams.get(sessionId)?.approvals.keys() ?? []]) await respondApproval(sessionId, id, name === 'approval-allow-all'); break; }

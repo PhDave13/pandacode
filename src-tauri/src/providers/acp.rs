@@ -165,6 +165,9 @@ impl Protocol {
     pub(super) fn acp(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
         let grok = self.config.provider == "grok";
+        if self.acp_live_answered(&value, &mut step) {
+            return Ok(step);
+        }
         if value.get("error").is_some() {
             if grok && (value["id"] == 7 || value["error"]["code"] == -32000) {
                 return Err(GROK_SIGN_IN.into());
@@ -294,7 +297,7 @@ impl Protocol {
                         let window = self.grok_context_window();
                         self.usage(total, window, &mut step);
                     }
-                    step.done = true;
+                    self.acp_turn_end(result, &mut step);
                 }
                 _ => {}
             }
@@ -853,6 +856,125 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
     let result = inspect_state(command, &std::env::temp_dir(), false, false, DISCOVERY_STARTUP, COMMAND_GRACE).await;
     if let Ok((metadata, _)) = &result { super::acp_catalog::store(discovery, metadata); }
     Ok(connection_status(result))
+}
+
+const MAX_STEER_BYTES: usize = 128 * 1024;
+const MAX_STEERS: usize = 16;
+/// Request ids for live steering prompts, clear of startup (1-7), cancel (900) and goals (10000+).
+const STEER_IDS: std::ops::Range<u64> = 2000..9000;
+
+/// Steering for ACP runs. OpenCode folds a second `session/prompt` into the running
+/// loop at its next step (both requests answer at turn end), so it steers live.
+/// Kimi rejects a busy prompt and Grok only queues one natively as a later turn,
+/// so for every other agent the text waits here and goes out as the next
+/// `session/prompt` on the same session when the current one ends.
+#[derive(Default)]
+pub(super) struct Steers {
+    held: Vec<(String, String)>,
+    live: Vec<(u64, String, String)>,
+    next: u64,
+    /// The opening prompt answered while live steers were still outstanding.
+    turn_over: bool,
+}
+
+impl Protocol {
+    pub(super) fn steer_event(&self, id: &str, text: &str, status: &str, mode: &str) -> AgentEvent {
+        // `event()` keeps only generic metadata keys; a steer needs its mode too.
+        let mut event = self.event("steer", text, None);
+        event.data = Some(json!({"id":id,"status":status,"mode":mode}));
+        event
+    }
+
+    pub(super) fn acp_steer(&mut self, id: String, text: String, reply: super::goals::RpcReply) -> Step {
+        let mut step = Step::default();
+        let text = text.trim().to_owned();
+        if text.is_empty() || text.len() > MAX_STEER_BYTES {
+            let _ = reply.send(Err("Write a steering message under 128 KiB.".into()));
+            return step;
+        }
+        let steers = &mut self.acp_steers;
+        if steers.held.len() + steers.live.len() >= MAX_STEERS {
+            let _ = reply.send(Err("Too many steering messages are waiting; the message stays queued.".into()));
+            return step;
+        }
+        let live = self.config.provider == "opencode" && self.phase == 1 && !steers.turn_over && !self.remote_id.is_empty();
+        let mode = if live { "live" } else { "next-turn" };
+        step.events.push(self.steer_event(&id, &text, "pending", mode));
+        if live {
+            let steers = &mut self.acp_steers;
+            let request = STEER_IDS.start + steers.next % (STEER_IDS.end - STEER_IDS.start);
+            steers.next += 1;
+            step.write.push(json!({"jsonrpc":"2.0","id":request,"method":"session/prompt","params":{"sessionId":self.remote_id,"prompt":[{"type":"text","text":text}]}}));
+            step.events.push(self.steer_event(&id, &text, "delivered", mode));
+            self.acp_steers.live.push((request, id.clone(), text));
+        } else {
+            self.acp_steers.held.push((id.clone(), text));
+        }
+        let _ = reply.send(Ok(json!({"steered":true,"id":id,"mode":mode})));
+        step
+    }
+
+    /// Steers that will never reach the agent (stop, error, process exit).
+    pub(super) fn acp_steers_failed(&mut self) -> Step {
+        let mut step = Step::default();
+        for (id, text) in std::mem::take(&mut self.acp_steers.held) {
+            step.events.push(self.steer_event(&id, &text, "failed", "next-turn"));
+        }
+        self.acp_steers.live.clear();
+        step
+    }
+
+    /// The running `session/prompt` answered: send held steers as the next turn, or finish.
+    fn acp_turn_end(&mut self, result: &Value, step: &mut Step) {
+        if result["stopReason"] == "cancelled" {
+            let mut failed = self.acp_steers_failed();
+            step.events.append(&mut failed.events);
+            step.done = true;
+            return;
+        }
+        if !self.acp_steers.live.is_empty() {
+            self.acp_steers.turn_over = true;
+            return;
+        }
+        self.acp_steers.turn_over = false;
+        let held = std::mem::take(&mut self.acp_steers.held);
+        if held.is_empty() {
+            step.done = true;
+            return;
+        }
+        self.config.prompt = held.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join("\n\n");
+        self.kimi_prompt(step);
+        for (id, text) in held {
+            step.events.push(self.steer_event(&id, &text, "delivered", "next-turn"));
+        }
+    }
+
+    /// Kimi's ACP frames, with its turn end routed through held steers.
+    pub(super) fn kimi_steered(&mut self, value: Value) -> Result<Step, String> {
+        let result = (value["id"] == 3).then(|| value["result"].clone()).filter(|result| !result.is_null());
+        let mut step = self.kimi(value)?;
+        if let Some(result) = result.filter(|_| step.done) {
+            step.done = false;
+            self.acp_turn_end(&result, &mut step);
+        }
+        Ok(step)
+    }
+
+    /// A live steer request answered. Returns false when the id is not one.
+    fn acp_live_answered(&mut self, value: &Value, step: &mut Step) -> bool {
+        let Some(index) = value["id"].as_u64().and_then(|id| self.acp_steers.live.iter().position(|(request, ..)| *request == id)) else {
+            return false;
+        };
+        let (_, id, text) = self.acp_steers.live.remove(index);
+        if value.get("error").is_some() {
+            // Refused mid-turn: carry it into the next turn instead of failing the run.
+            self.acp_steers.held.push((id, text));
+        }
+        if self.acp_steers.turn_over && self.acp_steers.live.is_empty() {
+            self.acp_turn_end(&value["result"], step);
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1555,5 +1677,121 @@ mod tests {
         assert_eq!(models[2].name, "Actual B");
         assert_eq!(models[1].reasoning_efforts.len(), 1);
         assert!(models[2].reasoning_efforts.is_empty());
+    }
+
+    fn acp_steer(p: &mut Protocol, id: &str, text: &str) -> (Step, Result<Value, String>) {
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let step = p.acp_steer(id.into(), text.into(), tx);
+        (step, rx.try_recv().unwrap())
+    }
+
+    fn steer_statuses(step: &Step) -> Vec<(String, String, String)> {
+        step.events.iter().filter(|event| event.kind == "steer").map(|event| {
+            let data = event.data.as_ref().unwrap();
+            (data["id"].as_str().unwrap().into(), data["status"].as_str().unwrap().into(), data["mode"].as_str().unwrap().into())
+        }).collect()
+    }
+
+    // Recorded from grok 1.0.62 `agent stdio`: a turn end, trimmed to the fields read here.
+    fn grok_turn_end() -> Value {
+        json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{"sessionId":"01a16446-2e56-77e2-8bb5-ed2ce3a57f81","requestId":"59162bb0-f403-47e6-a050-70c29e8c39e9","promptId":"59162bb0-f403-47e6-a050-70c29e8c39e9","totalTokens":27887,"modelId":"grok-4.7","inputTokens":27849,"outputTokens":31}}})
+    }
+
+    #[test]
+    fn held_steers_go_out_as_the_next_prompt_and_keep_the_run_open() {
+        let (mut p, _) = grok_ready("plan");
+        let (step, reply) = acp_steer(&mut p, "s1", "  use the parser  ");
+        assert!(step.write.is_empty(), "Grok cannot take input mid-turn");
+        assert_eq!(reply.unwrap(), json!({"steered":true,"id":"s1","mode":"next-turn"}));
+        assert_eq!(steer_statuses(&step), [("s1".into(), "pending".into(), "next-turn".into())]);
+        acp_steer(&mut p, "s2", "and add tests").1.unwrap();
+
+        let step = p.receive(grok_turn_end()).unwrap();
+        assert!(!step.done, "the run waits for the steered turn");
+        assert_eq!(step.write.len(), 1);
+        let prompt = &step.write[0];
+        assert_eq!(prompt["method"], "session/prompt");
+        assert_eq!(prompt["id"], 3);
+        assert_eq!(prompt["params"]["sessionId"], p.remote_id);
+        let text = prompt["params"]["prompt"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with(GROK_PLAN_PREFIX) && text.ends_with("use the parser\n\nand add tests"), "{text}");
+        let delivered: Vec<_> = steer_statuses(&step).into_iter().map(|(id, status, _)| (id, status)).collect();
+        assert_eq!(delivered, [("s1".into(), "delivered".into()), ("s2".into(), "delivered".into())]);
+
+        let step = p.receive(grok_turn_end()).unwrap();
+        assert!(step.done && step.write.is_empty());
+    }
+
+    #[test]
+    fn steers_before_the_first_prompt_wait_and_cancelled_turns_fail_them() {
+        let mut p = Protocol::new(config("kimi"));
+        let (step, reply) = acp_steer(&mut p, "early", "hi");
+        assert!(step.write.is_empty());
+        assert_eq!(reply.unwrap()["mode"], "next-turn");
+        p.remote_id = "main".into();
+        p.phase = 1;
+        // Recorded Kimi Code 0.26 cancel answer.
+        let step = p.kimi_steered(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}})).unwrap();
+        assert!(step.done && step.write.is_empty());
+        assert_eq!(steer_statuses(&step), [("early".into(), "failed".into(), "next-turn".into())]);
+
+        let mut p = Protocol::new(config("kimi"));
+        p.remote_id = "main".into();
+        p.phase = 1;
+        acp_steer(&mut p, "k", "next").1.unwrap();
+        let step = p.kimi_steered(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}})).unwrap();
+        assert!(!step.done);
+        assert_eq!(step.write[0]["params"]["prompt"][0]["text"], "next");
+        acp_steer(&mut p, "lost", "never sent").1.unwrap();
+        assert_eq!(steer_statuses(&p.acp_steers_failed()), [("lost".into(), "failed".into(), "next-turn".into())]);
+    }
+
+    #[test]
+    fn steers_are_bounded_and_validated() {
+        let mut p = Protocol::new(config("deepseek"));
+        assert!(acp_steer(&mut p, "a", "   ").1.is_err());
+        assert!(acp_steer(&mut p, "a", &"x".repeat(MAX_STEER_BYTES + 1)).1.is_err());
+        for n in 0..MAX_STEERS {
+            acp_steer(&mut p, &n.to_string(), "ok").1.unwrap();
+        }
+        let (step, reply) = acp_steer(&mut p, "over", "ok");
+        assert!(reply.is_err() && step.events.is_empty());
+    }
+
+    #[test]
+    fn opencode_steers_live_and_finishes_when_both_prompts_answer() {
+        let mut p = Protocol::new(config("opencode"));
+        p.remote_id = "ses_e9bb8a9f5ffeWeueZ0ePLK1srM".into();
+        p.phase = 1;
+        let (step, reply) = acp_steer(&mut p, "live", "The codeword is BANANA.");
+        assert_eq!(reply.unwrap(), json!({"steered":true,"id":"live","mode":"live"}));
+        assert_eq!(step.write[0]["method"], "session/prompt");
+        assert_eq!(step.write[0]["params"]["prompt"][0]["text"], "The codeword is BANANA.");
+        let request = step.write[0]["id"].as_u64().unwrap();
+        assert!(STEER_IDS.contains(&request));
+        let statuses: Vec<_> = steer_statuses(&step).into_iter().map(|(_, status, _)| status).collect();
+        assert_eq!(statuses, ["pending", "delivered"]);
+        // Recorded from OpenCode 1.19.0: both requests answer together at turn end.
+        let usage = json!({"inputTokens":113,"outputTokens":4,"totalTokens":23054,"thoughtTokens":25,"cachedReadTokens":22912});
+        let first = p.receive(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","usage":usage,"_meta":{}}})).unwrap();
+        assert!(!first.done, "the live steer is still open");
+        let (step, reply) = acp_steer(&mut p, "late", "one more");
+        assert!(step.write.is_empty(), "after the turn answered, a steer waits for the next turn");
+        assert_eq!(reply.unwrap()["mode"], "next-turn");
+        let second = p.receive(json!({"jsonrpc":"2.0","id":request,"result":{"stopReason":"end_turn","usage":usage,"_meta":{}}})).unwrap();
+        assert!(!second.done);
+        assert_eq!(second.write[0]["params"]["prompt"][0]["text"], "one more");
+        assert!(p.receive(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","_meta":{}}})).unwrap().done);
+
+        // A refused live steer never fails the run; it goes with the next turn instead.
+        let mut p = Protocol::new(config("opencode"));
+        p.remote_id = "s".into();
+        p.phase = 1;
+        let request = acp_steer(&mut p, "busy", "retry me").0.write[0]["id"].clone();
+        let step = p.receive(json!({"jsonrpc":"2.0","id":request,"error":{"code":-32603,"message":"busy"}})).unwrap();
+        assert!(!step.done);
+        let step = p.receive(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}})).unwrap();
+        assert!(!step.done);
+        assert_eq!(step.write[0]["params"]["prompt"][0]["text"], "retry me");
     }
 }

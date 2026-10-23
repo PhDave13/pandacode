@@ -189,30 +189,36 @@ pub async fn queue_restore(state: State<'_, AppState>, entry: QueuedMessage) -> 
     restore(&store, &entry)
 }
 
-/// Sends a message into the running turn. On success it is saved to the transcript;
-/// a harness that cannot steer returns an error and the message should stay queued.
+/// Sends a message to the running agent without stopping it: into the current turn
+/// where the harness allows (`mode: "live"`), otherwise as the next turn of the same
+/// run (`"next-turn"`). Returns `{"steered":true,"id","mode"}`; `steer` agent events
+/// with that id report `delivered`, or `failed` if the run ends first. On an error the
+/// message should stay queued.
 #[tauri::command]
-pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, text: String) -> Result<()> {
+pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, text: String) -> Result<serde_json::Value> {
     let text = text.trim().to_owned();
     if text.is_empty() {
         return Err("Write a message to steer with.".into());
     }
     // A task on another computer steers there and saves the message in its own history.
-    if crate::remote::route(&app, &state, &session_id, "task.steer", serde_json::json!({"text": text})).await?.is_some() {
-        return Ok(());
+    if let Some(reply) = crate::remote::route(&app, &state, &session_id, "task.steer", serde_json::json!({"text": text})).await? {
+        return Ok(reply);
     }
     let reply = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;
         let agent = agents.get(&session_id).ok_or("The agent is not running; the message stays queued.")?;
         let (tx, rx) = tokio::sync::oneshot::channel();
-        agent.send(RunInput::Steer { text: text.clone(), reply: tx }).map_err(|_| "The agent has stopped.".to_string())?;
+        let id = uuid::Uuid::new_v4().to_string();
+        agent.send(RunInput::Steer { id, text: text.clone(), reply: tx }).map_err(|_| "The agent has stopped.".to_string())?;
         rx
     };
-    tokio::time::timeout(std::time::Duration::from_secs(15), reply)
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(15), reply)
         .await
         .map_err(|_| "The agent did not accept the message in time; it stays queued.".to_owned())?
         .map_err(|_| "The agent stopped before taking the message.".to_owned())??;
-    state.store.lock().map_err(|e| e.to_string())?.message(&session_id, "user", &text)
+    // ponytail: saved on acceptance; a steer later reported `failed` stays in the transcript.
+    state.store.lock().map_err(|e| e.to_string())?.message(&session_id, "user", &text)?;
+    Ok(reply)
 }
 
 #[cfg(test)]

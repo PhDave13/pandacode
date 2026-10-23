@@ -17,6 +17,7 @@ test.beforeEach(async ({ page }) => {
     expect(source).toMatch(marker);
     const body = source.replace(marker, `(window.__queueCalls ??= []).push({ command, args: structuredClone(args) });
       if (command === 'send_message' && window.__holdAgent) { session(args.sessionId).status = 'running'; return; }
+      if (command === 'steer_task' && window.__rejectSteer) throw new Error('No live run to steer.');
       if (command === 'queue_add' && window.__slowQueue) await new Promise(resolve => setTimeout(resolve, 300));
       switch (command) {`);
     await route.fulfill({ response, body: body + '\nwindow.__queueEmit = emit; window.__queueSession = session; window.__queueInvoke = invoke;\n' });
@@ -79,15 +80,13 @@ test('delivers the next message when a run finishes and holds after a failure or
   await expect(panel(page)).toHaveCount(0);
 });
 
-test('queues instead of steering when the harness cannot take mid-turn messages', async ({ page }) => {
-  await page.locator('.task-item[data-id="session-3"]').click();
+test('queues a steer the running turn rejects', async ({ page }) => {
   await startRun(page);
-  await expect(prompt(page)).toHaveAttribute('placeholder', 'Queue a follow-up…');
+  await page.evaluate(() => { (window as any).__rejectSteer = true; });
   await prompt(page).fill('Steer attempt');
   await prompt(page).press('ControlOrMeta+Enter');
-  await expect(page.locator('#toast')).toContainText('cannot take messages mid-turn');
+  await expect(page.locator('#toast')).toContainText('Queued instead');
   await expect(rows(page).locator('.queue-text')).toHaveText(['Steer attempt']);
-  expect(await calls(page, 'steer_task')).toEqual([]);
 });
 
 test('keeps every message when typing quickly while the queue is being saved', async ({ page }) => {
@@ -123,8 +122,9 @@ test('Send now delivers a held entry right away and keeps the rest held', async 
   expect((await calls(page, 'send_message')).length).toBe(2);
 });
 
-test('Send now while running stops the run, sends that entry first and keeps the others in order', async ({ page }) => {
+test('Send now falls back to stopping the run when it cannot steer, and keeps the others in order', async ({ page }) => {
   await startRun(page);
+  await page.evaluate(() => { (window as any).__rejectSteer = true; });
   for (const text of ['One', 'Two', 'Three']) { await prompt(page).fill(text); await prompt(page).press('Enter'); }
   await panel(page).getByRole('button', { name: 'Send now: Three' }).click();
   await expect.poll(async () => (await calls(page, 'stop_session')).length).toBe(1);
@@ -146,13 +146,4 @@ test('Steer sends a queued entry into a steerable running turn', async ({ page }
   await expect.poll(async () => (await calls(page, 'steer_task')).map(c => c.args.text)).toEqual(['Steer me']);
   await expect(rows(page).locator('.queue-text')).toHaveText(['Keep']);
   expect(await calls(page, 'stop_session')).toEqual([]);
-});
-
-test('non-steerable harnesses offer only Send now', async ({ page }) => {
-  await page.locator('.task-item[data-id="session-3"]').click();
-  await startRun(page);
-  await prompt(page).fill('Queued');
-  await prompt(page).press('Enter');
-  await expect(panel(page).getByRole('button', { name: /^Steer now/ })).toHaveCount(0);
-  await expect(panel(page).getByRole('button', { name: 'Send now: Queued' })).toBeVisible();
 });

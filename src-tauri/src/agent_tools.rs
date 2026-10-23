@@ -338,7 +338,7 @@ pub fn catalog() -> Vec<Value> {
         spec("list_queue", "List messages queued to send to a task in this project after its current run, in delivery order.", json!({"taskId":task}), &[]),
         spec("queue_message", "Queue a user-authorized follow-up for a task in this project. It is sent in order after that task's current run finishes, or right away if it is idle and its queue is not paused.", json!({"taskId":task,"text":text}), &["taskId","text"]),
         spec("remove_queued", "Remove a queued message by entry ID (from list_queue) for a task in this project.", json!({"entryId":{"type":"string","maxLength":64}}), &["entryId"]),
-        spec("steer_task", "Send a user-authorized message into another task's running turn. Works for Claude-family and Codex agents; others refuse, so use queue_message instead.", json!({"taskId":task,"text":text}), &["taskId","text"]),
+        spec("steer_task", "Send a user-authorized message to another task's running agent without stopping it: into the current turn where the harness allows, otherwise as the next turn of the same run. Fails only when the task is not running; use queue_message then.", json!({"taskId":task,"text":text}), &["taskId","text"]),
         spec("interrupt_task", "Request that another running task in this project stop. Stopping is asynchronous: this confirms the request, not the stop. Check read_task for the outcome.", json!({"taskId":task}), &["taskId"]),
         spec("pin_task", "Pin or unpin a task in the current project's sidebar.", json!({"taskId":task,"pinned":{"type":"boolean"}}), &["taskId","pinned"]),
         spec("archive_task", "Archive or restore an idle task in the current project.", json!({"taskId":task,"archived":{"type":"boolean"}}), &["taskId","archived"]),
@@ -755,9 +755,9 @@ async fn dispatch(
                 return Err("Use this on another task; the current task is already running this turn.".into());
             }
             if name == "pandacode_steer_task" {
-                crate::message_queue::steer_task(app.clone(), state, target.id.clone(), string(&args, "text")).await?;
+                let reply = crate::message_queue::steer_task(app.clone(), state, target.id.clone(), string(&args, "text")).await?;
                 let _ = app.emit("sessions-changed", ());
-                json!({"steered": true})
+                reply
             } else {
                 crate::stop_session(app.clone(), state, target.id.clone()).await?;
                 json!({"interruptRequested": true, "note": "The stop is asynchronous; read_task shows when the task is idle."})

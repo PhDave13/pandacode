@@ -374,7 +374,9 @@ struct PartialTool {
 pub enum RunInput {
     Stop,
     /// A message for the agent while it works: injected mid-turn where the harness supports it.
+    /// The reply is `{"steered":true,"id","mode":"live"|"next-turn"}`; `steer` events follow its delivery.
     Steer {
+        id: String,
         text: String,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
@@ -1016,8 +1018,9 @@ struct Protocol {
     remote_id: String,
     turn_id: String,
     phase: u8,
-    /// Steering messages written to Claude Code that it has not yet echoed back as consumed.
-    steers_pending: usize,
+    /// Steering messages this run has accepted but not yet delivered.
+    steers: steering::Steers,
+    acp_steers: acp::Steers,
     /// Latest Codex rate-limit snapshot, for the reset time of a usage-limit error.
     codex_limits: Value,
     /// Claude echoes the opening prompt first; later echoes are steering messages.
@@ -1146,7 +1149,8 @@ impl Protocol {
             config,
             turn_id: String::new(),
             phase: 0,
-            steers_pending: 0,
+            steers: Default::default(),
+            acp_steers: Default::default(),
             codex_limits: Value::Null,
             prompt_replayed: false,
             pending: HashMap::new(),
@@ -1700,15 +1704,22 @@ impl Protocol {
     }
     fn receive_inner(&mut self, value: Value) -> Result<Step, String> {
         match self.config.provider.as_str() {
-            "codex" => self.codex(value),
-            "kimi" => self.kimi(value),
-            "pi" | "omp" => self.pi(value),
+            "codex" => self.codex(value).map(|step| self.steered(step)),
+            "kimi" => self.kimi_steered(value),
+            "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" => self.acp(value),
             _ => self.claude(value),
         }
     }
+    fn steered(&mut self, mut step: Step) -> Step {
+        self.steer_turn_end(&mut step);
+        step
+    }
     fn codex(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
+        if self.codex_steer_response(&value, &mut step) {
+            return Ok(step);
+        }
         let method = string(&value, "method");
         let params = &value["params"];
         if !method.is_empty() {
@@ -1851,7 +1862,10 @@ impl Protocol {
                     } else {
                         self.remember_text_phase(field(item,"id"),item["phase"].as_str());
                     }
-                } else if kind!="userMessage" && kind!="reasoning" {
+                } else if kind=="userMessage" {
+                    // Codex echoes a steer as a user message when the turn takes it.
+                    if method=="item/started" { self.steers_consumed(&item["content"],&mut step); }
+                } else if kind!="reasoning" {
                     self.codex_tool(item,method=="item/completed",&mut step);
                 }
             },
@@ -2180,6 +2194,7 @@ impl Protocol {
                     request["message"]["content"] = content;
                     step.write.push(request);
                     self.phase = 1;
+                    self.claude_send_held(&mut step);
                 }
             }
             "system" if value["subtype"] == "init" => {
@@ -2350,7 +2365,7 @@ impl Protocol {
             }
             "user" => {
                 if value["isReplay"] == true {
-                    self.claude_replay();
+                    self.claude_replay(&value["message"]["content"], &mut step);
                 }
                 if let Some(content) = value["message"]["content"].as_array() {
                     for block in content {
@@ -2450,9 +2465,9 @@ impl Protocol {
                     let id = self.claude_text_id(&Value::Null);
                     self.text_snapshot(&id, None, text, &mut step);
                 }
-                // A steering message that arrived as the turn ended starts another turn;
-                // keep the run open for that turn's result unless this one failed.
-                step.done = self.steers_pending == 0 || value["is_error"] == true;
+                // A steer Claude has not echoed yet arrived as the turn ended: Claude
+                // starts another turn for it in this process, so keep the run open.
+                step.done = !self.claude_steers_open();
             }
             _ => {}
         }
@@ -2903,7 +2918,7 @@ async fn run_process_with_tools(
                     match action {
                         Some(RunInput::Goal{request,reply})=>{let step=protocol.goal_control(request,reply);if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}},
                         Some(RunInput::CodexRequest{method,params,reply})=>{let step=protocol.codex_control(method,params,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
-                        Some(RunInput::Steer{text,reply})=>{let step=protocol.steer(text,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
+                        Some(RunInput::Steer{id,text,reply})=>{let step=protocol.steer(id,text,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
                         Some(RunInput::Approval{request_id,approved})=>{if !mcp.as_ref().is_some_and(|server|server.approve(&request_id,approved)) {let step=protocol.approval_step(&request_id,approved); apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;}},
                         Some(RunInput::UserInput{request_id,response,reply})=>{
                             match protocol.user_input(&request_id,response) {
@@ -2977,6 +2992,9 @@ async fn run_process_with_tools(
     jobs.abort_all();
     queued.clear();
     protocol.goals.cancel_pending();
+    for event in protocol.steers_ended(result.is_ok() && !stopped) {
+        sink(event);
+    }
     for event in protocol.cancel_requests().events {
         sink(event);
     }

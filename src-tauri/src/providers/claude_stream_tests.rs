@@ -156,3 +156,32 @@ fn app_instructions_ride_the_cached_system_prompt_not_every_message() {
     assert!(super::takes_system_instructions("mimo"));
     assert!(!super::takes_system_instructions("codex"));
 }
+
+/// Frames recorded from Claude Code 2.1.308 (`-p --input-format stream-json
+/// --replay-user-messages`, haiku) with a steer written to stdin as the first
+/// turn ended: Claude answers it as a second turn of the same process.
+#[test]
+fn steer_written_as_the_turn_ends_runs_as_a_second_turn_of_the_same_run() {
+    let mut protocol = Protocol::new(config("claude"));
+    protocol.phase = 1;
+    let (reply, _rx) = tokio::sync::oneshot::channel();
+    protocol.steer("s1".into(), "Also append the word STEERED to your final reply.".into(), reply);
+    let frames = [
+        json!({"type":"user","isReplay":true,"session_id":"s","message":{"role":"user","content":"Reply with just the word DONE."}}),
+        json!({"type":"assistant","session_id":"s","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"DONE"}]}}),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"s"}),
+        json!({"type":"system","subtype":"init","session_id":"s"}),
+        json!({"type":"user","isReplay":true,"session_id":"s","message":{"role":"user","content":[{"type":"text","text":"Also append the word STEERED to your final reply."}]}}),
+        json!({"type":"assistant","session_id":"s","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"DONE STEERED"}]}}),
+        json!({"type":"result","subtype":"success","is_error":false,"result":"DONE STEERED","session_id":"s"}),
+    ];
+    let mut done = Vec::new();
+    let mut delivered = 0;
+    for frame in frames {
+        let step = protocol.receive(frame).unwrap();
+        delivered += step.events.iter().filter(|event| event.kind == "steer" && event.data.as_ref().unwrap()["status"] == "delivered").count();
+        done.push(step.done);
+    }
+    assert_eq!(done, [false, false, false, false, false, false, true], "only the steered turn's result ends the run");
+    assert_eq!(delivered, 1);
+}

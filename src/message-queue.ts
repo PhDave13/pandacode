@@ -1,6 +1,5 @@
 /** The queue above the composer: follow-ups typed while an agent works, delivered in order. */
 import { escape, icon } from './dom';
-import type { ProviderId } from './types';
 
 export interface QueuedMessage {
   id: string;
@@ -22,11 +21,6 @@ export const HOLD_LABEL: Record<HoldReason, string> = {
   limited: 'Paused until the usage limit resets',
 };
 
-/** Harnesses whose running turn accepts a message: Claude Code stream input, Codex `turn/steer` and Pi `steer`. */
-export function canSteer(provider: ProviderId): boolean {
-  return provider === 'claude' || provider === 'glm' || provider === 'mimo' || provider === 'codex' || provider === 'pi';
-}
-
 export interface QueueView {
   entries: QueuedMessage[];
   hold: HoldReason | null;
@@ -36,7 +30,10 @@ export interface QueueView {
   sendable: boolean;
   editingId: string | null;
   busy: boolean;
+  /** Entries whose steer is in flight; they leave the queue once it is taken. */
+  steering: ReadonlySet<string>;
 }
+const SPINNER = '<span class="support-spinner" aria-hidden="true"></span>';
 
 function attachmentLabel(entry: QueuedMessage): string {
   const count = entry.attachments.length;
@@ -50,8 +47,12 @@ function row(entry: QueuedMessage, index: number, view: QueueView): string {
       <div class="queue-edit-actions"><button type="button" class="secondary-button" data-action="queue-cancel">Cancel</button><button type="button" class="primary-button" data-action="queue-save">Save</button></div></li>`;
   }
   const preview = escape(entry.text.slice(0, 60));
-  const steer = view.running && view.steerable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-steer" title="Send into the running turn" aria-label="Steer now: ${preview}">${icon('spark')}<span>Steer</span></button>` : '';
-  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${view.running ? 'Stop the run and send this next' : 'Send this now'}" aria-label="Send now: ${preview}">${icon('arrow')}<span>Send now</span></button>` : '';
+  if (view.steering.has(entry.id)) {
+    return `<li class="queue-row steering" data-queue-id="${escape(entry.id)}" aria-busy="true"><span class="queue-index" aria-hidden="true">${index + 1}</span>
+    <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span><span class="queue-status" role="status">${SPINNER}Steering…</span></li>`;
+  }
+  const steer = view.running && view.steerable && !view.busy && !entry.attachments.length ? `<button type="button" class="queue-now" data-action="queue-steer" title="Send into the running turn" aria-label="Steer now: ${preview}">${icon('spark')}<span>Steer</span></button>` : '';
+  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${!view.running ? 'Send this now' : view.steerable && !entry.attachments.length ? 'Send into the running turn' : 'Stop the run and send this next'}" aria-label="Send now: ${preview}">${icon('arrow')}<span>Send now</span></button>` : '';
   return `<li class="queue-row" data-queue-id="${escape(entry.id)}"><span class="queue-index" aria-hidden="true">${index + 1}</span>
     <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span>${attachmentLabel(entry)}
     <span class="queue-actions">${steer}${sendNow}<button type="button" class="icon-button" data-action="queue-edit" aria-label="Edit queued message ${index + 1}" title="Edit" ${view.busy ? 'disabled' : ''}>${icon('edit')}</button><button type="button" class="icon-button" data-action="queue-up" aria-label="Move queued message ${index + 1} up" title="Move up" ${index === 0 || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button queue-down" data-action="queue-down" aria-label="Move queued message ${index + 1} down" title="Move down" ${last || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button" data-action="queue-remove" aria-label="Remove queued message ${index + 1}" title="Remove" ${view.busy ? 'disabled' : ''}>${icon('close')}</button></span></li>`;
@@ -64,7 +65,7 @@ export function queuePanel(view: QueueView): string {
   // A limit is resolved from its banner (Continue now or Resume at reset), so the queue offers no Resume then.
   const resume = view.hold === 'limited' ? '' : `<button type="button" class="queue-resume" data-action="queue-resume" ${view.busy ? 'disabled' : ''}>${view.running ? 'Resume after this run' : 'Resume'}</button>`;
   const status = view.hold ? `<span class="queue-hold">${HOLD_LABEL[view.hold]}</span>${resume}`
-    : `<span class="queue-next">${view.running ? 'Sends when the agent finishes' : 'Sending next…'}</span>`;
+    : `<span class="queue-next">${view.running ? 'Sends when the agent finishes' : `${SPINNER}Sending next…`}</span>`;
   return `<section class="queue-panel" aria-label="Queued messages"><header class="queue-heading"><strong>Queued</strong><span class="queue-count">${count}</span>${status}</header><ol class="queue-list">${view.entries.map((entry, index) => row(entry, index, view)).join('')}</ol></section>`;
 }
 

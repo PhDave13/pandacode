@@ -881,6 +881,15 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
 .queue-now{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border-radius:3px;font-size:.74rem;font-weight:550;white-space:nowrap;color:var(--accent-ink);background:color-mix(in srgb,var(--accent) 30%,transparent)}
 .queue-now:hover{background:color-mix(in srgb,var(--accent) 50%,transparent)}
 .queue-now .icon{width:12px;height:12px}
+.steer-button{display:inline-flex;align-items:center;gap:5px;height:31px;padding:0 11px;margin-right:6px;border-radius:4px;flex-shrink:0;font-size:.8rem;font-weight:550;white-space:nowrap;color:var(--accent-ink);background:color-mix(in srgb,var(--accent) 30%,transparent)}
+.steer-button:hover{background:color-mix(in srgb,var(--accent) 50%,transparent)}
+.steer-button .icon{width:13px;height:13px}
+.steer-state,.queue-status,.queue-next{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.steer-state{margin-top:6px;font-size:.76rem;color:var(--muted)}
+.steer-state.failed{color:var(--danger)}
+.steer-state .icon{width:13px;height:13px}
+:is(.steer-state,.queue-status,.queue-next) .support-spinner{width:11px;height:11px}
+.queue-status{margin-left:auto;font-size:.74rem;color:var(--muted)}
 /* PandaCode is instant: no transitions anywhere. Looping status indicators (spinners,
    working pulses) are animations, not transitions, so they keep running. */
 *,*::before,*::after{transition:none!important}
