@@ -58,7 +58,8 @@ atomically (temp file in the same folder, fsync, rename). Each install's data fo
 scope, so a dev build and the installed app never share secrets. A missing, unreadable or
 corrupt file means none (signed out). Connect never uses the OS keychain: macOS pins each item
 to the exact code hash of the build that made it, and PandaCode has no Apple Team ID, so every
-update asked for the login password on every read. Nothing is migrated from the keychain
+update asked for the login password on every read. Other app secrets moved the same way, to
+`secrets.json` (see `secret_store.rs`). Nothing is migrated from the keychain for Connect
 (reading it is what prompted); users from before this change sign in once more, and the `409`
 path below gives them a new device id.
 

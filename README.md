@@ -125,8 +125,12 @@ Discord, WhatsApp or a browser too.
   stored locally in SQLite. Prompts go only to the coding CLI or service you
   pick, under that provider's own terms.
 - **It only talks to services you choose.** Provider keys (GLM, MiMo, DeepSeek, Command Code, cloud
-  sandboxes, bot channels) live in the system keychain and are sent only to
-  that provider.
+  sandboxes, bot channels, connection secrets) are sent only to that provider.
+  On macOS they live in `secrets.json` in PandaCode's app data folder, readable
+  only by your user (0600), never the Keychain, so updates never ask for your
+  login password; keys saved in the Keychain by older versions move there on
+  first use. Linux keeps them in the Secret Service and Windows in Credential
+  Manager.
 
 A few automatic checks send no personal data — just plain requests for public
 information:

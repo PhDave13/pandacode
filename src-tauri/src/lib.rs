@@ -3146,6 +3146,7 @@ pub fn run() {
             }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            secret_store::setup(&dir);
             provider_settings::setup(&dir).map_err(std::io::Error::other)?;
             connections::setup(&dir).map_err(std::io::Error::other)?;
             // Optional integration storage must never prevent the workspace from opening.

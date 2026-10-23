@@ -81,6 +81,7 @@ pub(crate) async fn command(config: &RunConfig, configure: impl FnOnce(&mut Comm
         env: env.into_iter().chain(prepared.env).collect(),
         attach,
         status: status.clone(),
+        secrets: crate::secret_store::dir().map(std::path::Path::to_path_buf),
     };
     let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
     write_private(&path, &serde_json::to_vec(&spec).map_err(|e| e.to_string())?)?;
