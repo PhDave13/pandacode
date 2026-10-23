@@ -77,6 +77,14 @@ permission check is skipped). Command Code advertises all five of its modes in e
 session, so a mode it stops advertising fails the turn instead of silently running in a
 different one.
 
+Cline's ACP session modes are Plan and Act, and it asks permission for every tool
+(`allow_once` / `allow_always` / `reject_once`). Standard is `act` with Cline's
+auto-approve off: reads and searches are allowed, edits, commands and other tools ask
+you. Accept edits is the same, and edit requests are approved. Plan is Cline's `plan`
+mode: reads and searches are allowed, edits, deletes and moves are declined, and other
+tools (commands, fetches) ask you. Full access is `act` with `--auto-approve true`, so
+Cline runs every tool without asking. A missing mode fails the turn.
+
 Kimi's actual mode behaviour is verified against its installed engine source:
 `default` is manual, `yolo` auto-approves routine operations, and `auto` is fully
 unattended. Its ACP mode descriptions can lag behind those engine semantics, so

@@ -1442,12 +1442,14 @@ test('keeps the Settings agent menu clickable at the minimum desktop window size
   const menu = page.getByRole('dialog', { name: 'Default agent', exact: true });
   await expect(menu.getByRole('menuitemradio', { name: 'Claude Code', exact: true })).toBeFocused();
   await page.screenshot({ path: '/private/tmp/pandacode-settings-menu-narrow.png', animations: 'disabled' });
+  // The list scrolls at this height; every agent must be reachable once scrolled to.
   const hitTargets = await menu.getByRole('menuitemradio').evaluateAll(elements => elements.map(element => {
+    element.scrollIntoView({ block: 'nearest' });
     const rect = element.getBoundingClientRect();
     return { inViewport: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
       reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) };
   }));
-  expect(hitTargets).toHaveLength(13);
+  expect(hitTargets).toHaveLength(14);
   expect(hitTargets.every(target => target.inViewport && target.reachable)).toBe(true);
   await menu.getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();
   await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toHaveText('Kimi Code');

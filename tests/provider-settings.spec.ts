@@ -50,7 +50,7 @@ async function delayedConnections(page: Page): Promise<void> {
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
-  await expect(page.locator('#settings-panel-providers details summary')).toHaveCount(8);
+  await expect(page.locator('#settings-panel-providers details summary')).toHaveCount(9);
   for (const summary of await page.locator('#settings-panel-providers details summary').all()) await summary.click();
 }
 
@@ -165,7 +165,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'omp', 'github-copilot']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'omp', 'github-copilot']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {
@@ -319,4 +319,24 @@ test('Command Code has a key card, four approval modes and its own model list', 
   await expect(card.getByLabel('Command Code API key', { exact: true })).toHaveAttribute('type', 'password');
   await card.locator('summary').click();
   await expect(card.getByLabel('Command Code executable', { exact: true })).toBeVisible();
+});
+
+test('Cline has a sign-in card, four approval modes and thinking levels', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'cline'));
+  await page.goto('/');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="cline"]')).toBeVisible();
+  await page.locator('#mode-picker-trigger').click();
+  const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
+  await expect(items).toHaveCount(4);
+  await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
+  await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Cline', exact: false }) });
+  await expect(card).toContainText('cline auth');
+  await expect(card.getByRole('link', { name: 'Cline CLI docs' })).toHaveAttribute('href', 'https://docs.cline.bot/cline-cli/overview');
+  await card.locator('summary').click();
+  await expect(card.getByLabel('Cline executable', { exact: true })).toBeVisible();
 });

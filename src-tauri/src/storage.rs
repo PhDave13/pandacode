@@ -992,6 +992,7 @@ impl Store {
             "pi",
             "deepseek",
             "commandcode",
+            "cline",
             "omp",
             "github-copilot",
         ]
@@ -1174,6 +1175,7 @@ impl Store {
             "pi",
             "deepseek",
             "commandcode",
+            "cline",
             "omp",
             "github-copilot",
         ]
@@ -1690,7 +1692,7 @@ fn handoff_from_provider(content: &str) -> Option<String> {
                 | "mimo"
                 | "pi"
                 | "deepseek"
-                | "commandcode"
+                | "commandcode" | "cline"
                 | "omp"
                 | "github-copilot"
         )
@@ -3453,6 +3455,7 @@ mod tests {
                 "pi",
                 "deepseek",
                 "commandcode",
+                "cline",
                 "omp",
                 "github-copilot",
             ] {

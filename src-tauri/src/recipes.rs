@@ -13,8 +13,8 @@ const MAX_FILE: u64 = 64 * 1024;
 const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
 /// Harnesses whose running turn accepts a message (mirrors `canSteer` in `message-queue.ts`).
 const STEERING: [&str; 5] = ["claude", "glm", "mimo", "codex", "pi"];
-const HARNESSES: [&str; 12] = [
-    "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "omp",
+const HARNESSES: [&str; 13] = [
+    "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "omp",
 ];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]

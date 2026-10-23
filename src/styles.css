@@ -64,7 +64,7 @@ button .icon{pointer-events:none}
 .task-indicator.running{background:#ac8100;box-shadow:none;animation:breathe 1.5s infinite}
 .task-indicator.attention{background:#a45e13;box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .3)}
 .provider-logo{width:20px;height:20px;display:inline-block;object-fit:contain;flex-shrink:0;vertical-align:middle;pointer-events:none}
-.provider-logo[data-provider="github-copilot"]{color:var(--text)}
+.provider-logo[data-provider="github-copilot"],.provider-logo[data-provider="cline"]{color:var(--text)}
 .provider-logo[data-provider="codex"]{transform:scale(1.25)}
 .provider-logo[data-provider="pi"]{image-rendering:pixelated}
 .task-provider{width:18px;height:18px;opacity:.8;flex-shrink:0;align-self:center}

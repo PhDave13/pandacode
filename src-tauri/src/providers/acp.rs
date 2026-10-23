@@ -1,4 +1,4 @@
-//! ACP v1 transport for OpenCode, Antigravity, Grok Build, Command Code, and
+//! ACP v1 transport for OpenCode, Antigravity, Grok Build, Command Code, Cline and
 //! GitHub Copilot CLI. Kimi retains its provider-specific mode mapping.
 use super::*;
 use crate::slash_commands::claude::Pipe;
@@ -68,6 +68,7 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "github-copilot" => {
             command.args(["--no-auto-update", "--acp", "--stdio"]);
         }
+        "cline" => super::cline::configure(command, config),
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
@@ -129,14 +130,11 @@ pub(super) fn configuration(mode: &str) -> String {
 }
 
 fn options<'a>(config: &'a Value, category: &str) -> Option<&'a Value> {
-    config["configOptions"]
-        .as_array()?
-        .iter()
-        .take(64)
-        .find(|option| {
-            option["type"] == "select"
-                && (option["category"] == category || option["id"] == category)
-        })
+    let selects = || config["configOptions"].as_array().into_iter().flatten().take(64).filter(|option| option["type"] == "select");
+    // An exact ID wins: Cline files its account `provider` option under the model category too.
+    selects()
+        .find(|option| option["id"] == category)
+        .or_else(|| selects().find(|option| option["category"] == category))
 }
 fn choices(option: &Value) -> Vec<&Value> {
     option["options"]
@@ -179,6 +177,9 @@ impl Protocol {
             }
             if self.config.provider == "commandcode" && value["error"]["code"] == -32000 {
                 return Err(super::commandcode::SIGN_IN.into());
+            }
+            if self.config.provider == "cline" && value["error"]["code"] == -32000 {
+                return Err(super::cline::SIGN_IN.into());
             }
             if value["error"]["code"] == -32000 {
                 return Err(format!("{} requires authentication. Sign in using its own CLI or official extension, then retry.", self.config.provider));
@@ -391,6 +392,18 @@ impl Protocol {
                 }
                 return Ok(step);
             }
+            if self.config.provider == "cline" {
+                let tool = &value["params"]["toolCall"];
+                let wanted = super::cline::permission(&self.config.mode, field(tool, "kind"));
+                if let Some(selected) = wanted.and_then(|wanted| options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted))) {
+                    if selected["kind"] == "reject_once" {
+                        let title = model_text(tool["title"].as_str(), "a file change", 200);
+                        step.events.push(self.event("status", format!("Plan mode declined: {title}"), None));
+                    }
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":selected["optionId"]}}}));
+                    return Ok(step);
+                }
+            }
             let one_allow = options.is_some_and(|values| {
                 values
                     .iter()
@@ -513,6 +526,9 @@ impl Protocol {
             // Command Code's ACP modes are its permission modes, so each PandaCode
             // choice has exactly one, and a missing one must not widen access.
             &[super::commandcode::mode_id(&self.config.mode)]
+        } else if self.config.provider == "cline" {
+            // Cline has Plan and Act; approvals ride on permission requests.
+            &[if self.config.mode == "plan" { "plan" } else { "act" }]
         } else if self.config.provider == "github-copilot" {
             let suffix = if self.config.mode == "plan" {
                 "#plan"
@@ -567,7 +583,7 @@ impl Protocol {
                     .push(choice_request(&self.remote_id, 4, option, id)?);
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode") {
+            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
         } else if let Some(modes) = self.acp_config["modes"]["availableModes"].as_array() {
@@ -578,7 +594,7 @@ impl Protocol {
                 step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode") {
+            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
         } else if self.config.mode == "plan" {
@@ -640,7 +656,8 @@ impl Protocol {
                 Some(option) => step
                     .write
                     .push(choice_request(&self.remote_id, 6, option, effort)?),
-                None if self.config.provider == "grok" => self.kimi_prompt(step),
+                // Grok and Cline take the effort as a launch flag.
+                None if matches!(self.config.provider.as_str(), "grok" | "cline") => self.kimi_prompt(step),
                 None => return Err("This model does not advertise an adjustable reasoning effort. Choose harness settings.".into()),
             }
         } else {

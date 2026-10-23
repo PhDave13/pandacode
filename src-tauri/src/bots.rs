@@ -223,7 +223,7 @@ fn validate(input: &BotInput) -> Result<BotInput> {
             | "mimo"
             | "pi"
             | "deepseek"
-            | "commandcode"
+            | "commandcode" | "cline"
             | "omp"
             | "github-copilot"
     );

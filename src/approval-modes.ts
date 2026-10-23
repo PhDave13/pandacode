@@ -16,6 +16,8 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     ? `${pi} runs without its own approvals; PandaCode asks before edits, commands and other non-read tools.`
     : provider === 'deepseek'
     ? 'DeepSeek edits and runs commands inside this project freely; it asks you before going outside it.'
+    : provider === 'cline'
+    ? 'Cline acts; reads and searches run, PandaCode asks before edits, commands and other tools.'
     : 'Use the harness’s normal rules. Ask you when approval is needed.' };
   const full: ApprovalMode = { id: 'full', label: 'Full access', icon: 'unlock', description: provider === 'antigravity'
     ? 'Automatically approve permission requests. Server restrictions still apply.'
@@ -27,6 +29,8 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     ? `${pi} runs every tool without asking.`
     : provider === 'deepseek'
     ? 'No sandbox: DeepSeek runs every tool without asking.'
+    : provider === 'cline'
+    ? 'Cline acts with its auto-approve on: every tool runs without asking.'
     : provider === 'github-copilot'
     ? 'Use Copilot Agent mode with Allow All on. Copilot automatically approves tool, path, and URL requests.'
     : 'Run tools without approval prompts, including outside this project.' };
@@ -35,7 +39,7 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     full];
   return [standard, provider === 'deepseek'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
-    : ['claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode'].includes(provider)
+    : ['claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline'].includes(provider)
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Allow file edits automatically. Other actions may still ask you.' }
     : provider === 'kimi'
     ? { id: 'auto', label: 'Ask when needed', icon: 'spark', description: 'Allow routine tools automatically. Ask you about sensitive actions.' }
@@ -49,6 +53,8 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: `Read-only: ${pi} may use read-only tools; everything else is declined.` }
     : provider === 'deepseek'
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read-only sandbox: DeepSeek cannot write files and proposes a plan; requests to escalate are declined.' }
+    : provider === 'cline'
+    ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Cline’s Plan mode: it explores and proposes a plan; file edits are declined, commands still ask.' }
     : provider === 'commandcode'
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read-only: Command Code researches and plans; edits and commands are declined.' }
     : { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Explore and plan changes before implementation.' }, full];

@@ -158,6 +158,7 @@ fn validate_selection(selection: &ModelSelection) -> Result<()> {
         "pi",
         "deepseek",
         "commandcode",
+        "cline",
         "omp",
         "github-copilot",
     ]
@@ -1751,6 +1752,7 @@ mod tests {
             "pi",
             "deepseek",
             "commandcode",
+            "cline",
             "omp",
             "github-copilot",
         ] {

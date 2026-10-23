@@ -20,6 +20,9 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
         }
         // Grok Build publishes its command list right after session/new, which
         // needs the cached-credential authenticate step first.
+        "cline" => {
+            command.arg("--acp");
+        }
         "grok" => {
             command.args(["--no-auto-update", "agent", "stdio"]);
         }
