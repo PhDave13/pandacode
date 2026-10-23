@@ -16,7 +16,6 @@ const MODEL: u64 = 4;
 const SKILLS: u64 = 5;
 const TURN: u64 = 6;
 const FIRST_COMMAND: u64 = 100;
-const MAX_PENDING_STEERS: usize = 16;
 const EFFORTS: [&str; 8] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// MSP commands carry a client-minted UUIDv7; Muse refuses any other version.
@@ -59,11 +58,12 @@ pub(super) fn approval_mode(mode: &str) -> &'static str {
 #[derive(Default)]
 pub(super) struct State {
     next_id: u64,
-    /// Steer request ID → its command ID and the caller waiting for acceptance.
-    steers: HashMap<u64, (String, RpcReply)>,
-    /// Accepted steers not yet seen as input. Muse may answer one in a following turn.
-    pending_steers: HashSet<String>,
-    /// Steers Muse echoed before their acknowledgement arrived.
+    /// Unanswered `turn/steer` requests: RPC id → (steer id, text, MSP command id, reply).
+    steers: HashMap<u64, (String, String, String, RpcReply)>,
+    /// Accepted live steers not yet taken, by MSP command id → steer id. Muse may
+    /// take one into the running turn or run it as its own following turn.
+    live: HashMap<String, String>,
+    /// Steers Muse took before their acknowledgement arrived.
     consumed_steers: HashSet<String>,
     /// The run's turn completed while a steer was still unresolved.
     turn_finished: bool,
@@ -262,7 +262,7 @@ impl Protocol {
         match method.as_str() {
             "turn/started" => {
                 let turn = field(params, "turnId");
-                if self.muse_steer_seen(turn) {
+                if self.muse_steer_seen(turn, &mut step) {
                     // A late steer runs as its own turn; the run follows it.
                     self.turn_id = turn.into();
                     self.muse.turn_finished = false;
@@ -315,18 +315,23 @@ impl Protocol {
     fn muse_response(&mut self, value: Value, step: &mut Step) -> Result<(), String> {
         let Some(id) = value["id"].as_u64() else { return Ok(()) };
         let error = value.get("error").map(|error| short(field(error, "message")));
-        if let Some((command, reply)) = self.muse.steers.remove(&id) {
-            // The echo may precede this acknowledgement; only an unseen steer is still pending.
+        if let Some((steer, text, command, reply)) = self.muse.steers.remove(&id) {
+            // The echo may precede this acknowledgement, so a taken steer is delivered at once.
             let consumed = self.muse.consumed_steers.remove(&command);
-            if let Some(error) = error {
-                let _ = reply.send(Err(error));
+            if error.is_some() {
+                // Refused (usually the turn ended first): it becomes the next turn instead.
+                self.accept(steer, text, "next-turn", reply, step);
             } else {
-                if !consumed {
-                    self.muse.pending_steers.insert(command);
+                self.accept(steer.clone(), text, "live", reply, step);
+                if consumed {
+                    self.steer_delivered(&steer, step);
+                } else {
+                    self.muse.live.insert(command, steer);
                 }
-                let _ = reply.send(Ok(json!({"steered": true})));
             }
-            step.done = self.muse.turn_finished && self.muse_steers_settled();
+            if self.muse.turn_finished {
+                self.muse_turn_over(step);
+            }
             return Ok(());
         }
         if id >= FIRST_COMMAND {
@@ -421,7 +426,7 @@ impl Protocol {
         }
     }
 
-    fn muse_turn(&mut self, step: &mut Step) {
+    pub(super) fn muse_turn(&mut self, step: &mut Step) {
         let prompt = self.config.prompt.trim_start();
         let skill = prompt
             .strip_prefix('/')
@@ -466,8 +471,10 @@ impl Protocol {
             "reasoning" if !completed => step.events.push(self.event("status", "Reasoning", None)),
             "userMessage" if item["steered"] == true || item.get("commandId").is_some() => {
                 // A steer taken into the running turn.
-                if !self.muse_steer_seen(field(item, "commandId")) && item["steered"] == true && item.get("commandId").is_none() {
-                    self.muse.pending_steers.clear();
+                if !self.muse_steer_seen(field(item, "commandId"), step) && item["steered"] == true && item.get("commandId").is_none() {
+                    for (_, steer) in std::mem::take(&mut self.muse.live) {
+                        self.steer_delivered(&steer, step);
+                    }
                 }
             }
             "toolCall" | "webSearch" | "subagent" | "userShell" => {
@@ -505,10 +512,8 @@ impl Protocol {
     fn muse_completed(&mut self, params: &Value, step: &mut Step) -> Result<(), String> {
         match field(params, "terminal") {
             "completed" => {
-                // An accepted steer that missed this turn runs next, and an
-                // unacknowledged one may still; wait for both to resolve.
                 self.muse.turn_finished = true;
-                step.done = self.muse_steers_settled();
+                self.muse_turn_over(step);
                 Ok(())
             }
             "cancelled" => Err("Muse Code cancelled the turn".into()),
@@ -679,29 +684,39 @@ impl Protocol {
 
     /// Marks a steer as taken (echoed or started as its own turn), in either order
     /// relative to its acknowledgement. Returns whether `command` was a steer.
-    fn muse_steer_seen(&mut self, command: &str) -> bool {
-        if self.muse.pending_steers.remove(command) {
+    fn muse_steer_seen(&mut self, command: &str, step: &mut Step) -> bool {
+        if let Some(steer) = self.muse.live.remove(command) {
+            self.steer_delivered(&steer, step);
             return true;
         }
-        if self.muse.steers.values().any(|(id, _)| id == command) {
+        if self.muse.steers.values().any(|(_, _, id, _)| id == command) {
             self.muse.consumed_steers.insert(command.to_owned());
             return true;
         }
         false
     }
 
-    fn muse_steers_settled(&self) -> bool {
-        self.muse.pending_steers.is_empty() && self.muse.steers.is_empty()
+    /// The run's turn completed. An unanswered steer decides what follows; an
+    /// accepted one Muse has not taken runs as its own turn next; held steers
+    /// become the next `turn/start` of this session; otherwise the run is done.
+    fn muse_turn_over(&mut self, step: &mut Step) {
+        if !self.muse.steers.is_empty() || !self.muse.live.is_empty() {
+            return;
+        }
+        self.muse.turn_finished = false;
+        self.next_steered_turn(step);
     }
 
-    pub(super) fn muse_steer(&mut self, text: String, reply: RpcReply) -> Step {
+    pub(super) fn muse_steer_count(&self) -> usize {
+        self.muse.steers.len()
+    }
+
+    /// `turn/steer` into the running turn; with no turn to take it (startup or
+    /// between turns), the steer is held for the next turn of this session.
+    pub(super) fn muse_steer(&mut self, id: String, text: String, reply: RpcReply) -> Step {
         let mut step = Step::default();
-        if self.remote_id.is_empty() || self.turn_id.is_empty() {
-            let _ = reply.send(Err("The agent has no active turn to steer.".into()));
-            return step;
-        }
-        if self.muse.steers.len() + self.muse.pending_steers.len() >= MAX_PENDING_STEERS {
-            let _ = reply.send(Err("Too many steering messages are waiting.".into()));
+        if self.remote_id.is_empty() || self.turn_id.is_empty() || self.muse.turn_finished {
+            self.accept(id, text, "next-turn", reply, &mut step);
             return step;
         }
         let command = command_id();
@@ -709,8 +724,8 @@ impl Protocol {
         if let Some(effort) = &self.config.reasoning_effort {
             params["reasoningEffort"] = json!(effort);
         }
-        let (id, request) = self.muse_request("turn/steer", params);
-        self.muse.steers.insert(id, (command, reply));
+        let (request_id, request) = self.muse_request("turn/steer", params);
+        self.muse.steers.insert(request_id, (id, text, command, reply));
         step.write.push(request);
         step
     }
@@ -941,25 +956,83 @@ mod tests {
         assert_eq!(step.write[0]["method"], "userInput/cancel");
     }
 
+    fn steer_statuses(step: &Step) -> Vec<(String, String)> {
+        step.events.iter().filter(|e| e.kind == "steer").map(|e| {
+            let data = e.data.as_ref().unwrap();
+            (data["status"].as_str().unwrap().to_owned(), data["mode"].as_str().unwrap().to_owned())
+        }).collect()
+    }
+
+    fn pair(status: &str, mode: &str) -> (String, String) {
+        (status.into(), mode.into())
+    }
+
     #[test]
     fn steers_target_the_turn_and_a_late_steer_keeps_the_run_open() {
         let (mut p, _) = started("ask", "default", false);
         let (tx, mut reply) = tokio::sync::oneshot::channel();
-        let step = p.steer("Actually keep it to 4 lines.".into(), tx);
+        let step = p.steer("s1".into(), "Actually keep it to 4 lines.".into(), tx);
         let steer = &step.write[0];
         assert_eq!(steer["method"], "turn/steer");
         assert_eq!(steer["params"]["expectedTurnId"], TURN_ID);
         let command = steer["params"]["commandId"].as_str().unwrap().to_owned();
-        p.receive(json!({"jsonrpc":"2.0","id":steer["id"],"result":{"commandId":command,"status":"accepted","turnId":TURN_ID}})).unwrap();
-        assert!(reply.try_recv().unwrap().is_ok());
+        let step = p.receive(json!({"jsonrpc":"2.0","id":steer["id"],"result":{"commandId":command,"status":"accepted","turnId":TURN_ID}})).unwrap();
+        assert_eq!(steer_statuses(&step), [pair("pending", "live")]);
+        assert_eq!(reply.try_recv().unwrap().unwrap(), json!({"steered":true,"id":"s1","mode":"live"}));
         // Recorded: the turn ended before taking the steer, which then ran as its own turn.
         let step = p.receive(frame("turn/completed", json!({"turnId":TURN_ID,"terminal":"completed"}))).unwrap();
         assert!(!step.done);
-        p.receive(frame("turn/started", json!({"turnId":command,"commandId":command}))).unwrap();
+        let step = p.receive(frame("turn/started", json!({"turnId":command,"commandId":command}))).unwrap();
+        assert_eq!(steer_statuses(&step), [pair("delivered", "live")]);
         let step = p.receive(frame("turn/completed", json!({"turnId":command,"terminal":"completed"}))).unwrap();
         assert!(step.done);
         assert_eq!(p.cancel()["params"]["turnId"], json!(command));
         assert_eq!(p.cancel()["method"], "turn/interrupt");
+    }
+
+    #[test]
+    fn steers_without_a_running_turn_become_the_next_turn_of_the_session() {
+        // Before the opening turn has an id: held, not refused.
+        let mut cfg = super::super::tests::config("muse");
+        cfg.reasoning_effort = Some("low".into());
+        let mut p = Protocol::new(cfg);
+        p.receive(initialized()).unwrap();
+        p.receive(session_result()).unwrap();
+        let (tx, mut early) = tokio::sync::oneshot::channel();
+        let step = p.steer("s1".into(), "first steer".into(), tx);
+        assert!(step.write.is_empty());
+        assert_eq!(steer_statuses(&step), [pair("pending", "next-turn")]);
+        assert_eq!(early.try_recv().unwrap().unwrap()["mode"], "next-turn");
+        p.receive(turn_result()).unwrap();
+        // A steer that loses the race with the turn's end is refused by Muse, then held too.
+        let (tx, mut late) = tokio::sync::oneshot::channel();
+        let steer = p.steer("s2".into(), "second steer".into(), tx).write.remove(0);
+        let end = p.receive(frame("turn/completed", json!({"turnId":TURN_ID,"terminal":"completed"}))).unwrap();
+        assert!(!end.done, "the run waits for the steer's answer");
+        let next = p.receive(json!({"jsonrpc":"2.0","id":steer["id"],"error":{"code":-32030,"message":"expected turn is not running","data":{"kind":"commandRejected"}}})).unwrap();
+        assert_eq!(late.try_recv().unwrap().unwrap()["mode"], "next-turn");
+        assert!(!next.done, "the run continues with the steered turn");
+        let turn = next.write.iter().find(|frame| frame["method"] == "turn/start").expect("next turn");
+        assert_eq!(turn["params"]["sessionId"], SESSION_ID);
+        assert_eq!(turn["params"]["input"], json!([{"type":"text","text":"first steer\n\nsecond steer"}]));
+        assert_eq!(turn["params"]["reasoningEffort"], "low");
+        assert_eq!(steer_statuses(&next), [pair("pending", "next-turn"), pair("delivered", "next-turn"), pair("delivered", "next-turn")]);
+        let next_turn = "01a166b0-0000-7000-8000-000000000001";
+        p.receive(json!({"jsonrpc":"2.0","id":6,"result":{"commandId":next_turn,"status":"accepted","turnId":next_turn,"startedNewTurn":true,"disposition":"started"}})).unwrap();
+        assert!(p.receive(frame("turn/completed", json!({"turnId":next_turn,"terminal":"completed"}))).unwrap().done);
+    }
+
+    #[test]
+    fn a_failed_run_reports_steers_it_never_delivered() {
+        let (mut p, _) = started("ask", "default", false);
+        let (tx, _reply) = tokio::sync::oneshot::channel();
+        let steer = p.steer("s1".into(), "never taken".into(), tx).write.remove(0);
+        let command = steer["params"]["commandId"].as_str().unwrap().to_owned();
+        p.receive(json!({"jsonrpc":"2.0","id":steer["id"],"result":{"commandId":command,"status":"accepted","turnId":TURN_ID}})).unwrap();
+        assert!(p.receive(frame("turn/completed", json!({"turnId":TURN_ID,"terminal":"cancelled"}))).is_err());
+        let events = p.steers_ended(false);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data.as_ref().unwrap()["status"], "failed");
     }
 
     #[test]
@@ -1078,19 +1151,21 @@ mod tests {
     fn a_steer_echoed_before_its_acknowledgement_still_lets_the_run_end() {
         let (mut p, _) = started("ask", "default", false);
         let (tx, mut reply) = tokio::sync::oneshot::channel();
-        let steer = p.steer("Also mention the word STEERED.".into(), tx).write.remove(0);
+        let steer = p.steer("s1".into(), "Also mention the word STEERED.".into(), tx).write.remove(0);
         let command = steer["params"]["commandId"].as_str().unwrap().to_owned();
         // Recorded echo of an absorbed steer, delivered before the acknowledgement.
-        p.receive(frame("item/completed", json!({"item":{"itemId":"e88a9af9-9827-509f-b0cf-4a8765561621","kind":"userMessage","turnId":TURN_ID,"revision":1,"status":"completed","text":"Also mention the word STEERED.","commandId":command,"steered":true}}))).unwrap();
+        let echo = p.receive(frame("item/completed", json!({"item":{"itemId":"e88a9af9-9827-509f-b0cf-4a8765561621","kind":"userMessage","turnId":TURN_ID,"revision":1,"status":"completed","text":"Also mention the word STEERED.","commandId":command,"steered":true}}))).unwrap();
+        assert!(steer_statuses(&echo).is_empty(), "not reported before it is accepted");
         let ack = p.receive(json!({"jsonrpc":"2.0","id":steer["id"],"result":{"commandId":command,"status":"accepted","turnId":TURN_ID}})).unwrap();
+        assert_eq!(steer_statuses(&ack), [pair("pending", "live"), pair("delivered", "live")]);
         assert!(!ack.done);
-        assert!(reply.try_recv().unwrap().is_ok());
+        assert_eq!(reply.try_recv().unwrap().unwrap()["mode"], "live");
         assert!(p.receive(frame("turn/completed", json!({"turnId":TURN_ID,"terminal":"completed","durationMs":21947}))).unwrap().done);
 
         // The turn may also complete before an absorbed steer is acknowledged.
         let (mut p, _) = started("ask", "default", false);
         let (tx, _reply) = tokio::sync::oneshot::channel();
-        let steer = p.steer("Also mention the word STEERED.".into(), tx).write.remove(0);
+        let steer = p.steer("s1".into(), "Also mention the word STEERED.".into(), tx).write.remove(0);
         let command = steer["params"]["commandId"].as_str().unwrap().to_owned();
         p.receive(frame("item/completed", json!({"item":{"itemId":"e","kind":"userMessage","turnId":TURN_ID,"revision":1,"status":"completed","text":"x","commandId":command,"steered":true}}))).unwrap();
         assert!(!p.receive(frame("turn/completed", json!({"turnId":TURN_ID,"terminal":"completed"}))).unwrap().done);

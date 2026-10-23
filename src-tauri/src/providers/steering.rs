@@ -1,8 +1,8 @@
 //! Steering: a message for an agent while its run is open. Steering never stops
 //! the run. Claude Code takes it on stream input (mid-turn at the next tool
 //! boundary, or as a following turn of the same process); Codex through
-//! `turn/steer` on the active turn; Pi through its `steer` command; ACP harnesses
-//! in `acp.rs`. When no turn can take it (startup, between turns, refused), the
+//! `turn/steer` on the active turn; Pi through its `steer` command; Muse through
+//! MSP `turn/steer` (`muse.rs`); ACP harnesses in `acp.rs`. When no turn can take it (startup, between turns, refused), the
 //! run holds it and sends it as the next turn of the same session the moment the
 //! current turn ends. Each steer reports `steer` events: `pending` with its mode
 //! on acceptance, `delivered` once the harness takes it, and `failed` if the run
@@ -53,7 +53,7 @@ impl Protocol {
             let _ = reply.send(Err("Write a steering message under 128 KiB.".into()));
             return step;
         }
-        let waiting = self.steers.live.len() + self.steers.held.len() + self.steers.requests.len() + self.pi.steers.len();
+        let waiting = self.steers.live.len() + self.steers.held.len() + self.steers.requests.len() + self.pi.steers.len() + self.muse_steer_count();
         if waiting >= MAX_STEERS {
             let _ = reply.send(Err("Too many steering messages are waiting; the message stays queued.".into()));
             return step;
@@ -73,6 +73,7 @@ impl Protocol {
             }
             "codex" => self.accept(id, text, "next-turn", reply, &mut step),
             "pi" | "omp" => return self.pi_steer(id, text, reply),
+            "muse" => return self.muse_steer(id, text, reply),
             _ => {
                 let _ = reply.send(Err("This agent cannot be steered; the message stays queued.".into()));
             }
@@ -125,6 +126,14 @@ impl Protocol {
         found
     }
 
+    /// The harness took the live steer `id`.
+    pub(super) fn steer_delivered(&mut self, id: &str, step: &mut Step) {
+        if let Some(index) = self.steers.live.iter().position(|(steer, _, _)| steer == id) {
+            let (id, text, mode) = self.steers.live.remove(index);
+            step.events.push(self.steer_event(&id, &text, "delivered", mode));
+        }
+    }
+
     /// Claude echoes the opening prompt first; each later echo is a consumed steer.
     pub(super) fn claude_replay(&mut self, content: &Value, step: &mut Step) {
         if self.steers_consumed(content, step) {
@@ -158,7 +167,7 @@ impl Protocol {
         }
     }
 
-    /// A Codex or Pi turn ended cleanly. Held steers become the next turn of this
+    /// A Codex or Pi turn ended cleanly (Muse calls `next_steered_turn` itself). Held steers become the next turn of this
     /// session instead of the run finishing.
     pub(super) fn steer_turn_end(&mut self, step: &mut Step) {
         if !step.done || step.failure.is_some() {
@@ -172,7 +181,7 @@ impl Protocol {
         self.next_steered_turn(step);
     }
 
-    fn next_steered_turn(&mut self, step: &mut Step) {
+    pub(super) fn next_steered_turn(&mut self, step: &mut Step) {
         if matches!(self.config.provider.as_str(), "pi" | "omp") {
             // Pi takes a queued steer before its next model call; one still here never reached it.
             let missed: Vec<_> = self.steers.live.drain(..).map(|(id, text, _)| (id, text)).collect();
@@ -190,6 +199,9 @@ impl Protocol {
             if let Err(error) = self.codex_prompt(step) {
                 step.failure = Some(error);
             }
+        } else if self.config.provider == "muse" {
+            self.config.prompt = text;
+            self.muse_turn(step);
         } else {
             self.pi.settled = false;
             step.write.push(json!({"type":"prompt","id":"pandacode-prompt","message":text}));

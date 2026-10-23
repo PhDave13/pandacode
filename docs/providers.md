@@ -657,9 +657,16 @@ shared structured-input form. `approval/resolved` and `userInput/settled` close 
 prompt that Muse's LLM approval judge, a rule or another client settled first.
 
 **Steering and stop.** A mid-turn message goes to `turn/steer` with the running
-`expectedTurnId`. When the turn finishes before the model reads a steer, Muse runs it
-as its own turn (its `turnId` is the steer's `commandId`); the run stays open for that
-turn. Stop sends `turn/interrupt`, and the run ends at the cancelled `turn/completed`.
+`expectedTurnId`. Once Muse accepts it, the steer is reported `pending` (mode `live`);
+it is `delivered` when Muse echoes it as a `userMessage` carrying its `commandId`
+(`steered: true`) or, when the turn finished before the model read it, when Muse
+starts it as its own turn (`turnId` is the steer's `commandId`); the run stays open
+for that turn. The echo can arrive before the acknowledgement, so either order counts.
+With no turn running (startup, or between turns) or when Muse refuses the steer
+because its turn just ended, the run holds it (mode `next-turn`) and sends it as the
+next `turn/start` of the same MSP session when the current turn ends. Steers the run
+never delivered are reported `failed` when it ends, so the app queues them again.
+Stop sends `turn/interrupt`, and the run ends at the cancelled `turn/completed`.
 
 **Approval modes.** Approval mode is selected on the wire; sandbox posture is fixed
 by process flags, so both are set for each run:
