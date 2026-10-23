@@ -5,12 +5,17 @@ mod agent_usage_providers;
 mod appearance;
 mod architect;
 mod bots;
+mod chats;
 mod browser;
 mod child_env;
+mod checks;
+mod code_search;
+mod connections;
 mod command_operations;
 mod context_recovery;
 mod conversation_fork;
 mod conversation_import;
+mod design;
 mod file_preview;
 mod run_script;
 mod github;
@@ -21,8 +26,10 @@ mod simulator;
 mod vm;
 mod secret_store;
 mod cloud;
+mod capabilities;
 mod vsix_themes;
 mod token_saver;
+mod skills;
 mod goal_state;
 #[cfg(test)]
 mod goal_workflow_tests;
@@ -40,6 +47,7 @@ mod remote;
 mod providers;
 mod session_titles;
 mod slash_commands;
+mod recipes;
 mod storage;
 mod subagent_state;
 mod support;
@@ -51,6 +59,7 @@ mod turn_changes;
 mod usage_keychain;
 mod usage_ledger;
 mod workspace;
+mod jj;
 
 pub use usage_keychain::handle_usage_keychain_helper;
 
@@ -434,8 +443,10 @@ impl AppState {
     }
 }
 /// Fixed instructions for every task turn: sidebar titles, the run script, change tracking.
-fn app_instructions() -> String {
-    [session_titles::GUIDANCE, run_script::INSTRUCTIONS, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI].concat()
+/// Projectless chats have nothing to run, so they skip the run script.
+fn app_instructions(chat: bool) -> String {
+    let run = if chat { "" } else { run_script::INSTRUCTIONS };
+    [session_titles::GUIDANCE, run, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI].concat()
 }
 
 /// PandaCode closes the harness when a turn ends, so background waits never come back.
@@ -462,10 +473,12 @@ mod instruction_tests {
         let reminded: Vec<i64> = (1..=20).filter(|turn| reminder_turn(*turn)).collect();
         assert_eq!(reminded, [1, 9, 17]);
         assert!(!reminder_turn(0));
-        let text = app_instructions();
+        let text = app_instructions(false);
         for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Generative UI:"] {
             assert!(text.contains(part), "{part}");
         }
+        let chat = app_instructions(true);
+        assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:"));
     }
 }
 
@@ -980,6 +993,33 @@ fn save_agent_activity(
         }
         _ => Ok(()),
     }
+}
+fn recipes_dir(app: &tauri::AppHandle, state: &State<'_, AppState>, project_id: &str, scope: &str) -> Result<PathBuf> {
+    if scope == "global" {
+        return Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipes"));
+    }
+    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(project_id, None)?;
+    Ok(recipes::project_dir(&root))
+}
+#[tauri::command]
+async fn recipes_list(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String) -> Result<Vec<recipes::Recipe>> {
+    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(&project_id, None).ok();
+    let global = recipes_dir(&app, &state, &project_id, "global")?;
+    blocking(move || Ok(recipes::list(root.as_deref(), &global))).await
+}
+#[tauri::command]
+async fn recipes_save(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String, scope: String, recipe: recipes::Recipe) -> Result<()> {
+    let dir = recipes_dir(&app, &state, &project_id, &scope)?;
+    blocking(move || recipes::save(&dir, &recipe)).await
+}
+#[tauri::command]
+async fn recipes_delete(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String, scope: String, name: String) -> Result<()> {
+    let dir = recipes_dir(&app, &state, &project_id, &scope)?;
+    blocking(move || recipes::delete(&dir, &name)).await
+}
+#[tauri::command]
+async fn recipes_dry_run(recipe: recipes::Recipe, provider: String, slash: Vec<String>) -> Result<recipes::Plan> {
+    recipes::plan(&recipe, &provider, &slash)
 }
 #[tauri::command]
 async fn list_slash_commands(
@@ -1537,7 +1577,7 @@ async fn launch_operation_admitted(
         config.prompt.push_str(&title.instruction());
     }
     if restore_stage.is_none() {
-        let instructions = app_instructions();
+        let instructions = app_instructions(chats::is_chat_folder(&config.cwd));
         if providers::takes_system_instructions(&config.provider) {
             // Cached with the system prompt: paid once, then read at a tenth of the price.
             config.instructions = instructions;
@@ -1728,6 +1768,7 @@ async fn launch_operation_admitted(
         let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
         let host = simulator::tools::with_simulator(host, app.clone(), stopped.clone());
         let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
         let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
         let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
         let host = Some(turn_changes::with_host(host, tracker.clone(), stopped.clone()));
@@ -2122,6 +2163,37 @@ async fn open_external_url(url: String) -> Result<()> {
     } else {
         Err("Could not open the browser.".into())
     }
+}
+
+#[tauri::command]
+async fn jj_status(state: State<'_, AppState>, project_id: String, session_id: Option<String>) -> Result<jj::JjStatus> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || jj::status(&root)).await
+}
+#[tauri::command]
+async fn jj_diff(state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: Option<String>) -> Result<String> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || jj::diff(&root, path.as_deref())).await
+}
+#[tauri::command]
+async fn jj_describe(state: State<'_, AppState>, project_id: String, session_id: Option<String>, message: String) -> Result<jj::JjStatus> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || jj::describe(&root, &message)).await
+}
+#[tauri::command]
+async fn jj_new(state: State<'_, AppState>, project_id: String, session_id: Option<String>) -> Result<jj::JjStatus> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || jj::new_change(&root)).await
+}
+#[tauri::command]
+async fn jj_commit(state: State<'_, AppState>, project_id: String, session_id: Option<String>, message: String) -> Result<jj::JjStatus> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || jj::commit(&root, &message)).await
+}
+#[tauri::command]
+async fn jj_log(state: State<'_, AppState>, project_id: String, session_id: Option<String>, limit: Option<usize>) -> Result<Vec<jj::Change>> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || jj::log(&root, limit.unwrap_or(20))).await
 }
 
 #[tauri::command]
@@ -2674,6 +2746,19 @@ async fn search_files(
     blocking(move || workspace::search_files(&root, query, limit)).await
 }
 #[tauri::command]
+async fn search_text(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+    query: String,
+    match_case: bool,
+    whole_word: bool,
+    regex: bool,
+) -> Result<workspace::TextSearchResult> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::search_text(&root, &query, match_case, whole_word, regex)).await
+}
+#[tauri::command]
 async fn read_file(
     state: State<'_, AppState>,
     project_id: String,
@@ -2722,6 +2807,19 @@ async fn get_run_script(
 ) -> Result<Option<run_script::RunScript>> {
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || run_script::inspect(&root)).await
+}
+/// The task checkout's own fast check, run once at the user's request after a
+/// clean turn. Bounded; no plan is a result, not an error.
+#[tauri::command]
+async fn run_turn_checks(state: State<'_, AppState>, session_id: String) -> Result<serde_json::Value> {
+    let project_id = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .session(&session_id)?
+        .project_id;
+    let root = state.root(&project_id, Some(&session_id))?;
+    blocking(move || Ok(checks::turn_report(&root))).await
 }
 #[tauri::command]
 async fn get_run_script_preview(
@@ -2923,6 +3021,7 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             provider_settings::setup(&dir).map_err(std::io::Error::other)?;
+            connections::setup(&dir).map_err(std::io::Error::other)?;
             // Optional integration storage must never prevent the workspace from opening.
             if jev::setup(&dir).is_err() {
                 eprintln!("Jev settings are unavailable; browser testing remains disabled.");
@@ -3043,8 +3142,14 @@ pub fn run() {
                 remote::mirror::remote_start_task,
                 remote::mirror::remote_repo_check,
                 provider_settings::provider_configuration,
+                connections::connections_list,
+                connections::connection_save,
+                connections::connection_delete,
+                connections::connection_assign,
                 agent_usage::agent_usage,
                 usage_ledger::usage_ledger,
+                capabilities::capabilities_inventory,
+                capabilities::cache_alignment,
                 prompt_activity,
                 set_resume_at_reset,
                 clear_usage_limit,
@@ -3101,6 +3206,7 @@ pub fn run() {
                 provider_settings::provider_remove_commandcode_key,
                 provider_settings::provider_set_mimo_endpoint,
                 architect::profiles::architect_profiles,
+                architect::profiles::architect_set_lead_guidance,
                 architect::profiles::architect_save_profile,
                 architect::profiles::architect_delete_profile,
                 architect::architect_get,
@@ -3137,12 +3243,18 @@ pub fn run() {
                 set_reasoning_effort,
                 update_session,
                 task_deletion::delete_session,
+                chats::chat_create,
+                chats::chat_cleanup,
                 get_messages,
                 turn_changes::turn_change_diff,
                 turn_changes::turn_change_summary,
                 list_subagents,
                 send_message,
                 list_slash_commands,
+                recipes_list,
+                recipes_save,
+                recipes_delete,
+                recipes_dry_run,
                 providers::acp::provider_check_connection,
                 resolve_slash_command,
                 stop_session,
@@ -3158,6 +3270,12 @@ pub fn run() {
                 list_provider_models,
                 git_status,
                 git_diff,
+                jj_status,
+                jj_diff,
+                jj_describe,
+                jj_new,
+                jj_commit,
+                jj_log,
                 git_stage,
                 git_commit,
                 git_branches,
@@ -3221,18 +3339,32 @@ pub fn run() {
                 vsix_themes::theme_remove,
                 token_saver::token_saver_tools,
                 token_saver::token_saver_install,
+                skills::skills_list,
+                skills::skills_import_folder,
+                skills::skills_import_github,
+                skills::skills_activate,
+                skills::skills_deactivate,
+                skills::skills_matrix,
+                skills::skills_scan,
+                skills::skills_remove,
                 set_task_link,
                 import_prompt_image,
                 read_document,
                 describe_folder,
                 list_files,
                 search_files,
+                search_text,
                 read_file,
+                design::design_list,
+                design::design_read,
+                design::design_comments,
+                design::design_save_comments,
                 workspace_image,
                 resolve_workspace_files,
                 prepare_file_preview,
                 get_run_script,
                 get_run_script_preview,
+                run_turn_checks,
                 start_run_script_terminal,
                 start_terminal,
                 write_terminal,

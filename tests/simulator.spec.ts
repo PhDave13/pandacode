@@ -25,6 +25,7 @@ async function open(page: Page): Promise<void> {
 }
 /** The phone tab in the right sidebar opens the simulator. */
 async function showSimulator(page: Page): Promise<void> {
+  await expect(page.locator('.task-item.selected')).toBeVisible(); // the panel opens once the task loads
   if (!(await page.locator('#inspector').isVisible())) await page.locator('#inspector-toggle').click();
   await page.locator('.inspector-tabs [data-action="tab-simulator"]').click();
 }

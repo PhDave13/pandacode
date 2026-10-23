@@ -34,6 +34,8 @@ export interface TeamLibrary {
   lastSetup: TeamSetup | null;
   activeProfileId: string | null;
   profiles: TeamProfile[];
+  /** Lead guidance for every team that does not set its own (Settings → Agents). */
+  leadGuidance?: string | null;
 }
 export interface WorkerCheckpoint {
   summary: string;

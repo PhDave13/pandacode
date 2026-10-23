@@ -1,11 +1,11 @@
 import type { ToolActivity } from './types';
 import { escape, icon } from './dom.ts';
+import { describeTool, kindIcon, summarizeTools, summaryIcons, toolPreview, traceRowHtml } from './tool-trace.ts';
 
 const MAX_CONTENT = 100_000;
 const MAX_DETAIL = 20_000;
 const MAX_LABEL = 256;
 const MAX_ID = 512;
-const statuses = { running: 'Running', completed: 'Completed', failed: 'Failed' } as const;
 
 /** Read the versioned record without treating arbitrary JSON or older labels as a tool. */
 export function decodeToolActivity(content: string): ToolActivity | undefined {
@@ -30,36 +30,35 @@ function bounded(value: string, limit = MAX_DETAIL): string {
   return value.length > limit ? value.slice(0, limit) + '\n[Display truncated]' : value;
 }
 
-function inputHint(input: string): string {
-  const value = input.slice(0, MAX_DETAIL).trim();
-  let hint = value.split('\n', 1)[0] ?? '';
-  if (value.startsWith('{')) {
-    try {
-      const record = JSON.parse(value) as Record<string, unknown>;
-      const field = record.command ?? record.cmd ?? record.file_path ?? record.filePath ?? record.path ?? record.query;
-      hint = typeof field === 'string' ? field : Array.isArray(field) && field.every(part => typeof part === 'string') ? field.join(' ') : '';
-    } catch { hint = ''; }
-  }
-  hint = hint.replace(/\s+/g, ' ').trim();
-  return hint.length > 96 ? hint.slice(0, 95) + '…' : hint;
-}
-
 function section(kind: 'input' | 'output', content: string): string {
   const label = kind === 'input' ? 'Input' : 'Output';
   return `<section class="tool-activity-section" data-tool-section="${kind}"><h4>${label}</h4><pre tabindex="0" aria-label="Tool ${kind}">${escape(bounded(content))}</pre></section>`;
+}
+
+function toolNote(tool: ToolActivity): string {
+  if (tool.output.trim()) return '';
+  const note = tool.status === 'running'
+    ? tool.input.trim() ? 'Waiting for output…' : 'Waiting for tool details…'
+    : tool.status === 'completed' ? 'No output was returned.' : 'No output was recorded.';
+  return `<p class="tool-activity-note">${note}</p>`;
+}
+
+/** The recorded input/output stay one quiet disclosure below the readable card. */
+function rawRecord(tool: ToolActivity): string {
+  const sections = (tool.input.trim() ? section('input', tool.input) : '') + (tool.output.trim() ? section('output', tool.output) : '');
+  return sections ? `<details class="tool-trace-raw"><summary>${icon('chevron')}Raw input/output</summary><div class="tool-trace-raw-body">${sections}</div></details>` : '';
 }
 
 /** Caller owns the stable key and restores native details.open when replacing activity rows. */
 export function renderToolActivity(content: string | ToolActivity, key: string): string {
   const tool = typeof content === 'string' ? decodeToolActivity(content) : content;
   if (!tool) return renderLegacyTool(content as string, key);
-  const name = tool.name.slice(0, MAX_LABEL) || 'Tool';
-  const hint = inputHint(tool.input);
-  const body = (tool.input.trim() ? section('input', tool.input) : '')
-    + (tool.output.trim() ? section('output', tool.output) : `<p class="tool-activity-note">${tool.status === 'running'
-      ? tool.input.trim() ? 'Waiting for output…' : 'Waiting for tool details…'
-      : tool.status === 'completed' ? 'No output was returned.' : 'No output was recorded.'}</p>`);
-  return `<details class="tool-activity" data-tool-key="${escape(key)}" data-tool-status="${escape(tool.status)}"><summary>${icon(tool.status === 'failed' ? 'alert' : tool.status === 'completed' ? 'check' : 'terminal')}<span class="tool-activity-name" title="${escape(name)}">${escape(name)}</span>${hint ? `<span class="tool-activity-hint">${escape(hint)}</span>` : ''}<span class="tool-activity-status">${escape(statuses[tool.status])}</span>${icon('chevron')}</summary><div class="tool-activity-body">${body}</div></details>`;
+  const named = { ...tool, name: tool.name.slice(0, MAX_LABEL) };
+  const trace = describeTool(named);
+  const status = tool.status === 'failed' ? '<span class="tool-activity-status">Failed</span>' : '';
+  const lead = icon(tool.status === 'failed' ? 'alert' : kindIcon(trace.kind), 'tool-trace-icon');
+  const body = toolPreview(named) + toolNote(tool) + rawRecord(tool);
+  return `<details class="tool-activity tool-trace" data-tool-key="${escape(key)}" data-tool-status="${escape(tool.status)}" data-tool-kind="${trace.kind}" data-tool-name="${escape(named.name)}"><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${status}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${body}</div></details>`;
 }
 
 function renderLegacyTool(content: string, key: string): string {
@@ -96,19 +95,10 @@ export function groupToolRuns<T>(entries: T[], toolKey: (entry: T) => string | u
 export function renderToolGroup(entries: { key: string; content: string | ToolActivity }[], expanded = false): string {
   if (!entries.length) return '';
   const tools = entries.map(entry => typeof entry.content === 'string' ? decodeToolActivity(entry.content) : entry.content);
-  const running = tools.filter(tool => tool?.status === 'running').length;
-  const failed = tools.filter(tool => tool?.status === 'failed').length;
-  const categories = new Set<string>();
-  for (const tool of tools) {
-    const name = tool?.name.toLowerCase() ?? '';
-    if (/bash|shell|exec|command|terminal/.test(name)) categories.add('Commands');
-    else if (/edit|write|patch/.test(name)) categories.add('Edits');
-    else if (/read|file|glob|list.*dir/.test(name)) categories.add('Files');
-    else if (/search|grep|find/.test(name)) categories.add('Search');
-    else if (/browser|navigate|screenshot/.test(name)) categories.add('Browser');
-  }
-  const label = `${entries.length} ${entries.length === 1 ? 'tool' : 'tools'}`;
-  const status = [running ? `${running} running` : '', failed ? `${failed} failed` : ''].filter(Boolean).join(' · ');
-  const hint = categories.size ? `<span class="tool-group-hint"> · ${escape([...categories].join(', '))}</span>` : '';
-  return `<details class="tool-group" data-tool-group-key="${escape('group:' + entries[0].key)}"${expanded ? ' open' : ''}><summary class="tool-group-summary">${icon(failed ? 'alert' : 'terminal')}<span class="tool-group-label">${label}</span>${hint}${status ? `<span class="tool-group-status${failed ? ' has-failure' : ''}"> · ${status}</span>` : ''}${icon('chevron')}</summary><div class="tool-group-body">${entries.map(entry => renderToolActivity(entry.content, entry.key)).join('')}</div></details>`;
+  const failed = tools.some(tool => tool?.status === 'failed');
+  const running = tools.some(tool => tool?.status === 'running');
+  const [sentence, failures] = summarizeTools(tools).split(' · ');
+  const stack = `<span class="tool-trace-stack" aria-hidden="true">${summaryIcons(tools).map(name => icon(name)).join('')}</span>`;
+  const status = failures ? `<span class="tool-group-status has-failure"> · ${escape(failures)}</span>` : '';
+  return `<details class="tool-group" data-tool-group-key="${escape('group:' + entries[0].key)}"${running ? ' data-running' : ''}${expanded ? ' open' : ''}><summary class="tool-group-summary">${failed ? icon('alert') : ''}<span class="tool-group-label">${escape(sentence)}</span>${stack}${status}${icon('chevron')}</summary><div class="tool-group-body">${entries.map(entry => renderToolActivity(entry.content, entry.key)).join('')}</div></details>`;
 }

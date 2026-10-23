@@ -161,6 +161,7 @@ test('a missing worktree folder is named in the chip and can be recreated', asyn
   await menu(page).getByRole('menuitem', { name: 'Recreate worktree', exact: true }).click();
   await expect(page.locator('#toast')).toContainText('Worktree restored on pandacode/vanish');
   await expect(chip(page)).toContainText('pandacode/vanish');
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.locator('#inspector-content')).toContainText('pandacode/vanish');
 });
 

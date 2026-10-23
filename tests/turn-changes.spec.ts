@@ -251,7 +251,7 @@ test.describe('turn changes', () => {
 
   test('uses the same read-only viewer for current working-tree changes', async ({ page }) => {
     await install(page);
-    await page.locator('#inspector-toggle').click();
+    await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
     await page.locator('[data-action="open-diff"]').first().click();
     const current = page.locator('.inspector-diff-host');
     await expect(current.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');

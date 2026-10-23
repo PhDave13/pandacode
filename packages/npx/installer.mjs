@@ -12,14 +12,16 @@ export const PUBKEY = 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3O
 export const BASE = 'https://github.com/aicodeking/pandacode/releases/latest/download';
 const ASSETS = {
   'darwin-arm64': 'PandaCode-macOS-arm64.app.tar.gz',
+  'darwin-x64': 'PandaCode-macOS-x64.app.tar.gz',
   'win32-x64': 'PandaCode-Windows-x64-setup.exe',
+  'win32-arm64': 'PandaCode-Windows-arm64-setup.exe',
   'linux-x64': 'PandaCode-Linux-x86_64.AppImage',
   'linux-arm64': 'PandaCode-Linux-aarch64.AppImage',
 };
 
 export function assetFor(platform = process.platform, arch = process.arch) {
   const asset = ASSETS[`${platform}-${arch}`];
-  if (!asset) throw new Error(`PandaCode has no build for ${platform}-${arch}. Supported: macOS Apple silicon, Windows x64, Linux x64.`);
+  if (!asset) throw new Error(`PandaCode has no build for ${platform}-${arch}. Supported: macOS (Apple silicon or Intel), Windows x64, Linux x64.`);
   return asset;
 }
 

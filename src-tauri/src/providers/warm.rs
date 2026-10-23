@@ -39,7 +39,13 @@ pub fn supported(config: &RunConfig) -> bool {
 
 /// Everything that shapes the launch: the command line, the folder and the tool catalog.
 pub(super) fn key(config: &RunConfig, tools: &[Value]) -> String {
+    key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider))
+}
+
+/// `connection` is the task's named connection and its revision, or empty for the global setup.
+fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
     json!({
+        "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
         "instructions": config.instructions, "tools": tools,
@@ -107,11 +113,21 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     if !supported(&config) {
         return Ok(());
     }
-    let path = executable(&config.provider).ok_or("Claude Code is not installed")?;
+    let connection = crate::connections::for_task(&config.session_id, &config.provider)
+        .map(|connection| crate::connections::launch(&connection))
+        .transpose()?;
+    let path = connection
+        .as_ref()
+        .and_then(|connection| connection.executable.clone())
+        .or_else(|| executable(&config.provider))
+        .ok_or("Claude Code is not installed")?;
     config.cwd = external_path(&config.cwd);
     let key = key(&config, &tools);
     let mut command = command(&path)?;
     configure_command(&mut command, &config);
+    if let Some(connection) = &connection {
+        connection.apply(&mut command);
+    }
     let server = if tools.is_empty() {
         None
     } else {
@@ -184,8 +200,13 @@ mod tests {
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),
             key(&base, &[]),
+            key_with(&base, &tools, "work#1"),
         ] {
             assert_ne!(different, original);
+        }
+        // A different named connection, or a saved change to the same one, starts cold.
+        for different in [key_with(&base, &tools, "personal#1"), key_with(&base, &tools, "work#2")] {
+            assert_ne!(different, key_with(&base, &tools, "work#1"));
         }
         // Relays, goals and skills always start cold.
         assert!(supported(&base));

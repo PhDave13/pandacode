@@ -1,6 +1,5 @@
-//! ACP v1 transport for installed OpenCode, Google's official Antigravity ACP
-//! server, and xAI's Grok Build (`grok agent stdio`). Kimi retains its
-//! provider-specific mode mapping.
+//! ACP v1 transport for OpenCode, Antigravity, Grok Build, Command Code, and
+//! GitHub Copilot CLI. Kimi retains its provider-specific mode mapping.
 use super::*;
 use crate::slash_commands::claude::Pipe;
 
@@ -65,6 +64,9 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
                 command.args(["--reasoning-effort", effort]);
             }
             command.arg("stdio");
+        }
+        "github-copilot" => {
+            command.args(["--no-auto-update", "--acp", "--stdio"]);
         }
         _ => {
             #[cfg(target_os = "linux")]
@@ -169,6 +171,9 @@ impl Protocol {
             return Ok(step);
         }
         if value.get("error").is_some() {
+            if self.config.provider == "github-copilot" && value["error"]["code"] == -32000 {
+                return Err("GitHub Copilot CLI requires sign-in. Run `copilot login` in a terminal, then retry.".into());
+            }
             if grok && (value["id"] == 7 || value["error"]["code"] == -32000) {
                 return Err(GROK_SIGN_IN.into());
             }
@@ -285,6 +290,14 @@ impl Protocol {
                 }
                 4 => {
                     self.acp_update_config(result);
+                    if self.config.provider == "github-copilot" {
+                        self.acp_copilot_permissions(&mut step)?;
+                    } else {
+                        self.acp_model(&mut step)?;
+                    }
+                }
+                8 if self.config.provider == "github-copilot" => {
+                    self.acp_update_config(result);
                     self.acp_model(&mut step)?;
                 }
                 5 => {
@@ -322,6 +335,7 @@ impl Protocol {
             // intact unless Full access, or Auto edits for an explicit edit call.
             let options = value["params"]["options"].as_array();
             let deepseek = self.config.provider == "deepseek";
+            let copilot = self.config.provider == "github-copilot";
             if deepseek && self.config.mode == "plan" {
                 // dsh runs read-only here and asks only to escalate past it.
                 if let Some(selected) = options.and_then(|values| values.iter().find(|entry| entry["kind"] == "reject_once")) {
@@ -343,6 +357,39 @@ impl Protocol {
                     step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":selected["optionId"]}}}));
                     return Ok(step);
                 }
+            }
+            // Read and search requests keep the ordinary approval path, as in Standard mode.
+            if copilot
+                && self.config.mode == "plan"
+                && !matches!(field(&value["params"]["toolCall"], "kind"), "read" | "search")
+            {
+                let tool = &value["params"]["toolCall"];
+                let kind = field(tool, "kind");
+                let read_only = kind == "think";
+                let wanted = if read_only {
+                    "allow_once"
+                } else {
+                    "reject_once"
+                };
+                let choice =
+                    options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted));
+                if let Some(selected) = choice {
+                    if !read_only {
+                        let title =
+                            model_text(tool["title"].as_str(), "a state-changing action", 200);
+                        step.events.push(self.event(
+                            "status",
+                            format!("Plan mode declined: {title}"),
+                            None,
+                        ));
+                    }
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":selected["optionId"]}}}));
+                } else {
+                    // A Plan task must not turn an unrecognized ACP permission
+                    // request into a user-overridable write approval.
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}}));
+                }
+                return Ok(step);
             }
             let one_allow = options.is_some_and(|values| {
                 values
@@ -466,6 +513,40 @@ impl Protocol {
             // Command Code's ACP modes are its permission modes, so each PandaCode
             // choice has exactly one, and a missing one must not widen access.
             &[super::commandcode::mode_id(&self.config.mode)]
+        } else if self.config.provider == "github-copilot" {
+            let suffix = if self.config.mode == "plan" {
+                "#plan"
+            } else {
+                "#agent"
+            };
+            if let Some(option) = options(&self.acp_config, "mode") {
+                let mode_choices = choices(option);
+                let found = mode_choices
+                    .iter()
+                    .find(|entry| field(entry, "value").ends_with(suffix));
+                let Some(found) = found else {
+                    return Err("GitHub Copilot CLI does not advertise the selected task mode. Update Copilot CLI, then refresh.".into());
+                };
+                step.write.push(choice_request(
+                    &self.remote_id,
+                    4,
+                    option,
+                    field(found, "value"),
+                )?);
+                return Ok(());
+            }
+            let Some(mode) = self.acp_config["modes"]["availableModes"]
+                .as_array()
+                .and_then(|modes| {
+                    modes
+                        .iter()
+                        .find(|mode| field(mode, "id").ends_with(suffix))
+                })
+            else {
+                return Err("GitHub Copilot CLI does not advertise the selected task mode. Update Copilot CLI, then refresh.".into());
+            };
+            step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
+            return Ok(());
         } else if self.config.provider == "opencode" {
             if self.config.mode == "plan" {
                 &["plan"]
@@ -504,6 +585,18 @@ impl Protocol {
             return Err("This harness does not advertise a read-only planning mode.".into());
         }
         self.acp_model(step)
+    }
+    fn acp_copilot_permissions(&mut self, step: &mut Step) -> Result<(), String> {
+        let option = options(&self.acp_config, "allow_all")
+            .ok_or("GitHub Copilot CLI does not advertise the Allow All setting required for PandaCode permissions. Update Copilot CLI, then retry.")?;
+        let wanted = if self.config.mode == "full" {
+            "on"
+        } else {
+            "off"
+        };
+        step.write
+            .push(choice_request(&self.remote_id, 8, option, wanted)?);
+        Ok(())
     }
     fn acp_model(&mut self, step: &mut Step) -> Result<(), String> {
         if self.config.model.is_empty() || self.config.model == "default" {
@@ -1098,6 +1191,146 @@ mod tests {
     fn response(id: u64, result: Value) -> Value {
         json!({"jsonrpc":"2.0","id":id,"result":result})
     }
+    fn copilot_session() -> Value {
+        json!({"sessionId":"copilot-session","configOptions":[
+            {"type":"select","id":"mode","category":"mode","currentValue":"https://agentclientprotocol.com/protocol/session-modes#agent","options":[
+                {"value":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},
+                {"value":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"},
+                {"value":"https://agentclientprotocol.com/protocol/session-modes#autopilot","name":"Autopilot"}]},
+            {"type":"select","id":"allow_all","category":"permissions","currentValue":"off","options":[{"value":"on"},{"value":"off"}]}],
+            "modes":{"availableModes":[
+                {"id":"https://agentclientprotocol.com/protocol/session-modes#agent","name":"Agent"},
+                {"id":"https://agentclientprotocol.com/protocol/session-modes#plan","name":"Plan"},
+                {"id":"https://agentclientprotocol.com/protocol/session-modes#autopilot","name":"Autopilot"}]}})
+    }
+    #[test]
+    fn copilot_initializes_via_acp_and_applies_only_advertised_mode_and_permission_values() {
+        for (mode, expected_mode, expected_allow_all) in [
+            ("ask", "#agent", "off"),
+            ("plan", "#plan", "off"),
+            ("full", "#agent", "on"),
+        ] {
+            let mut cfg = config("github-copilot");
+            cfg.mode = mode.into();
+            let mut p = Protocol::new(cfg);
+            assert_eq!(p.initial()["method"], "initialize");
+            assert_eq!(
+                p.receive(capabilities()).unwrap().write[0]["method"],
+                "session/new"
+            );
+            let selected_mode = p.receive(response(2, copilot_session())).unwrap();
+            assert_eq!(
+                selected_mode.write[0]["method"],
+                "session/set_config_option"
+            );
+            assert!(selected_mode.write[0]["params"]["value"]
+                .as_str()
+                .unwrap()
+                .ends_with(expected_mode));
+            let permissions = p.receive(response(4, json!({}))).unwrap();
+            assert_eq!(permissions.write[0]["params"]["configId"], "allow_all");
+            assert_eq!(permissions.write[0]["params"]["value"], expected_allow_all);
+            let prompt = p.receive(response(8, json!({}))).unwrap();
+            assert_eq!(prompt.write[0]["id"], 3);
+            assert_eq!(prompt.write[0]["method"], "session/prompt");
+        }
+    }
+    #[test]
+    fn copilot_plan_mode_allows_think_and_declines_other_permissions() {
+        let mut cfg = config("github-copilot");
+        cfg.mode = "plan".into();
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "copilot-session".into();
+        for (kind, expected) in [
+            ("think", "yes"),
+            ("execute", "no"),
+            ("edit", "no"),
+            ("other", "cancelled"),
+        ] {
+            let mut request = json!({"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"copilot-session","toolCall":{"title":"Requested action","kind":kind},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}});
+            if expected == "cancelled" {
+                request["params"]["options"] = json!([]);
+            }
+            let step = p.receive(request).unwrap();
+            assert_eq!(
+                step.write[0]["result"]["outcome"]["outcome"],
+                if expected == "cancelled" {
+                    "cancelled"
+                } else {
+                    "selected"
+                }
+            );
+            if expected != "cancelled" {
+                assert_eq!(step.write[0]["result"]["outcome"]["optionId"], expected);
+            }
+            if expected == "no" {
+                assert!(step
+                    .events
+                    .iter()
+                    .any(|event| event.text.contains("Plan mode declined")));
+            }
+        }
+    }
+    #[test]
+    fn copilot_plan_mode_sends_read_and_search_through_normal_approval() {
+        let mut cfg = config("github-copilot");
+        cfg.mode = "plan".into();
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "copilot-session".into();
+        for kind in ["read", "search"] {
+            let request = json!({"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"copilot-session","toolCall":{"title":"Requested action","kind":kind},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}});
+            let step = p.receive(request).unwrap();
+            assert!(step.write.is_empty(), "{kind} must wait for the user");
+        }
+    }
+    #[test]
+    fn copilot_requires_advertised_permission_and_model_settings() {
+        let mut p = Protocol::new(config("github-copilot"));
+        p.receive(capabilities()).unwrap();
+        let mut session = copilot_session();
+        session["configOptions"] = json!([session["configOptions"][0].clone()]);
+        p.receive(response(2, session)).unwrap();
+        assert!(p
+            .receive(response(4, json!({})))
+            .err()
+            .unwrap()
+            .contains("Allow All"));
+        let mut p = Protocol::new(config("github-copilot"));
+        p.remote_id = "copilot-session".into();
+        p.acp_config = copilot_session();
+        let mut cfg = config("github-copilot");
+        cfg.model = "unadvertised-model".into();
+        p.config = cfg;
+        assert!(p
+            .receive(response(8, json!({})))
+            .err()
+            .unwrap()
+            .contains("does not advertise the selected model"));
+    }
+    #[test]
+    fn copilot_authentication_errors_name_its_login_command() {
+        let mut p = Protocol::new(config("github-copilot"));
+        let error = p
+            .receive(
+                json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Unauthorized"}}),
+            )
+            .err()
+            .unwrap();
+        assert!(error.contains("copilot login"));
+    }
+    #[test]
+    fn copilot_launch_uses_direct_stdio_acp_arguments() {
+        let mut command = Command::new("copilot");
+        configure(&mut command, &config("github-copilot"));
+        assert_eq!(
+            command.as_std().get_args().collect::<Vec<_>>(),
+            [
+                std::ffi::OsStr::new("--no-auto-update"),
+                std::ffi::OsStr::new("--acp"),
+                std::ffi::OsStr::new("--stdio"),
+            ]
+        );
+    }
     #[test]
     fn startup_status_identifies_each_acknowledged_acp_stage() {
         let status = |step: &Step| step.events.iter().filter(|event| event.kind == "status").map(|event| event.text.as_str()).collect::<Vec<_>>().join(", ");
@@ -1650,7 +1883,7 @@ mod tests {
     }
     #[test]
     fn glm_explicit_model_remains_a_cli_override_and_default_is_real_glm() {
-        for model in ["default", "glm-5.1"] {
+        for model in ["default", "glm-5.3-flash"] {
             let mut cfg = config("glm");
             cfg.model = model.into();
             let mut command = Command::new("claude");
@@ -1663,7 +1896,7 @@ mod tests {
             let index = args.iter().position(|arg| arg == "--model").unwrap();
             assert_eq!(
                 args[index + 1],
-                if model == "default" { "glm-4.7" } else { model }
+                if model == "default" { "glm-5.3" } else { model }
             );
         }
     }

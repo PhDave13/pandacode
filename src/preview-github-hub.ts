@@ -1,5 +1,5 @@
 /* Browser-preview data for the GitHub view: a few repositories, their open pull requests
- * and issues, workflow runs and one run's jobs. `orbit-labs/orbit` is checked out as the sample `orbit` project; the others
+ * and issues, workflow runs and one re-run's jobs, steps, summary and earlier attempt. `orbit-labs/orbit` is checked out as the sample `orbit` project; the others
  * are only on GitHub until cloned. */
 import type { RunDetails } from './github-actions';
 import type { HubIssue, HubPull, HubRepo, HubRun } from './github-hub';
@@ -58,19 +58,24 @@ const runs: Record<string, HubRun[]> = {
     run(9050, 'Release', 'chore: release 1.4.0', 'main', 'cancelled', 2 * day, { event: 'push' }),
   ],
 };
+const steps = (start: number, ...items: [string, string, number][]) => items.map(([name, state, ms]) => ({ name, state, startedAt: at(start), completedAt: at(start - ms) }));
 const runDetails: Record<number, RunDetails> = {
   9087: {
     jobs: [
-      { name: 'lint', state: 'passed', startedAt: at(day), completedAt: at(day - 45_000), url: 'https://github.com/orbit-labs/orbit/actions/runs/9087/job/1' },
-      { name: 'test (ubuntu-latest)', state: 'failed', startedAt: at(day), completedAt: at(day - 4 * minute - 30_000), url: 'https://github.com/orbit-labs/orbit/actions/runs/9087/job/2' },
+      { id: 1, name: 'lint', state: 'passed', startedAt: at(day), completedAt: at(day - 45_000), url: 'https://github.com/orbit-labs/orbit/actions/runs/9087/job/1', steps: steps(day, ['Checkout', 'passed', 2_000], ['Run lint', 'passed', 40_000]), summary: '' },
+      { id: 2, name: 'test (ubuntu-latest)', state: 'failed', startedAt: at(day), completedAt: at(day - 4 * minute - 30_000), url: 'https://github.com/orbit-labs/orbit/actions/runs/9087/job/2',
+        steps: steps(day, ['Checkout', 'passed', 2_000], ['Install', 'passed', 50_000], ['Run tests', 'failed', 3 * minute + 30_000]),
+        summary: '### Test results\n\n**2 failed**, 184 passed\n\n- `contrast.spec.ts` › muted text meets 4.5:1\n- `contrast.spec.ts` › links in dark mode\n\n<script>alert(1)</script>' },
     ],
     artifacts: [{ name: 'playwright-report', size: 2_400_000, expired: false }, { name: 'coverage', size: 18_432, expired: true }],
+    attempts: [{ attempt: 1, state: 'failed', startedAt: at(day + 2 * 3600_000), updatedAt: at(day + 2 * 3600_000 - 3 * minute), url: 'https://github.com/orbit-labs/orbit/actions/runs/9087/attempts/1',
+      jobs: [{ id: 3, name: 'test (ubuntu-latest)', state: 'failed', startedAt: at(day + 2 * 3600_000), completedAt: at(day + 2 * 3600_000 - 3 * minute), url: 'https://github.com/orbit-labs/orbit/actions/runs/9087/job/3', steps: steps(day + 2 * 3600_000, ['Run tests', 'failed', 2 * minute]), summary: '' }] }],
   },
 };
 
 export const previewHub = {
   runs: (repo: string): HubRun[] => structuredClone(runs[repo] ?? []),
-  runDetails: (repo: string, id: number): RunDetails => structuredClone(repo in runs ? runDetails[id] ?? { jobs: [], artifacts: [] } : { jobs: [], artifacts: [] }),
+  runDetails: (repo: string, id: number): RunDetails => structuredClone(repo in runs ? runDetails[id] ?? { jobs: [], artifacts: [], attempts: [] } : { jobs: [], artifacts: [], attempts: [] }),
   pulls: (repo: string): HubPull[] => structuredClone(pulls[repo] ?? []),
   issues: (repo: string): HubIssue[] => structuredClone(issues[repo] ?? []),
 };

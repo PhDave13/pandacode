@@ -50,7 +50,7 @@ async function delayedConnections(page: Page): Promise<void> {
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
-  await expect(page.locator('#settings-panel-providers details summary')).toHaveCount(7);
+  await expect(page.locator('#settings-panel-providers details summary')).toHaveCount(8);
   for (const summary of await page.locator('#settings-panel-providers details summary').all()) await summary.click();
 }
 
@@ -151,7 +151,7 @@ test('a delayed configuration fills the saved MiMo cluster and its URL', async (
   await expect(card.locator('#mimo-endpoint-hint')).toHaveText('https://token-plan-ams.xiaomimimo.com/anthropic');
 });
 
-test('provider connections expose all new harnesses and real GLM model names', async ({ page }) => {
+test('provider connections expose all harnesses and real GLM model names', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
@@ -160,11 +160,12 @@ test('provider connections expose all new harnesses and real GLM model names', a
   await expect(page.getByText('Antigravity', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Grok Build', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('MiMo Token Plan', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('GitHub Copilot CLI', { exact: true }).first()).toBeVisible();
   await page.getByText('GLM Coding Plan', { exact: true }).first().click();
-  await expect(page.getByText('GLM-4.7', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'omp', 'github-copilot']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {
@@ -199,6 +200,59 @@ for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigra
     await expect.poll(readTask).toMatchObject({provider:next, mode:'full'});
   });
 }
+
+test('GitHub Copilot CLI has CLI sign-in guidance, a path override, Default model, and advertised modes', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'github-copilot'));
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.conversation-pane')).toHaveClass(/new-task-page/);
+  await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="github-copilot"]')).toBeVisible();
+  await page.locator('#mode-picker-trigger').click();
+  const modes = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
+  await expect(modes).toHaveCount(3);
+  await expect(modes.filter({ hasText: 'Accept edits' })).toHaveCount(0);
+  await expect(modes.filter({ hasText: 'Plan mode' })).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  const model = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  await model.click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  const copilot = picker.locator('.model-menu-option[data-provider="github-copilot"][data-model="default"]');
+  await expect(copilot).toContainText('Default');
+  await page.getByRole('searchbox', { name: 'Search harnesses and models' }).fill('custom-copilot-model');
+  await expect(picker.locator('.model-menu-option[data-provider="github-copilot"][data-model="custom-copilot-model"]')).toHaveCount(0);
+  await page.getByRole('searchbox', { name: 'Search harnesses and models' }).fill('');
+  await expect(copilot).toBeVisible();
+  await copilot.click();
+  await expect(model.locator('.provider-logo[data-provider="github-copilot"]')).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'GitHub Copilot CLI', exact: false }) });
+  await expect(card).toContainText('copilot login');
+  await expect(card.getByRole('link', { name: 'Install and sign in' })).toHaveAttribute('href', 'https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli');
+  await card.locator('summary').click();
+  await expect(card.getByLabel('GitHub Copilot CLI executable', { exact: true })).toBeVisible();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await expect(settings.locator('.provider-diagnostic[data-provider="github-copilot"]')).toContainText('GitHub Copilot CLI 1.0.82');
+  await settings.getByRole('button', { name: 'Default agent for new tasks', exact: true }).click();
+  const defaultMenu = page.getByRole('dialog', { name: 'Default agent', exact: true });
+  await defaultMenu.getByRole('menuitemradio', { name: 'GitHub Copilot CLI', exact: true }).click();
+  await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toContainText('GitHub Copilot CLI');
+});
+
+test('GitHub Copilot model discovery does not crash the picker in an existing chat', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
+  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await expect(picker).toBeVisible();
+  const copilot = picker.locator('.model-menu-option[data-provider="github-copilot"][data-model="default"]');
+  await expect(copilot).toContainText('Default');
+  await expect.poll(() => errors).toEqual([]);
+});
 
 test('Pi offers four approval modes with Accept edits', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'pi'));

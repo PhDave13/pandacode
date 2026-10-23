@@ -10,7 +10,7 @@
   });
   sessions.push(
     task('session-5', 'Offline sync for the reading list', 'opencode', '', 'in_progress', 40 * 60_000, { status: 'running' }),
-    task('session-6', 'Polish the onboarding flow', 'glm', 'glm-4.7', 'review', 3 * 3600_000),
+    task('session-6', 'Polish the onboarding flow', 'glm', 'glm-5.3', 'review', 3 * 3600_000),
     task('session-7', 'Fix flaky date tests', 'codex', 'gpt-6-astra', 'completed', 26 * 3600_000, { completedAt: at - 26 * 3600_000 }),
     task('session-8', 'Write the v2 migration guide', 'claude', 'opus', 'pending', 5 * 3600_000),
   );

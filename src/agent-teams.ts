@@ -18,6 +18,9 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
   host.innerHTML = `<div class="settings-group agent-teams">
     <div class="setting-row"><div><strong>Classic team setup</strong><small>Team opens Architect & workers.</small></div><input type="checkbox" class="settings-switch" aria-label="Classic team setup" ${classicTeamSetup() ? 'checked' : ''}></div>
     <div class="setting-row"><div><strong>Agent teams</strong><small>Pick one in the model picker.</small></div><button type="button" class="secondary-button agent-team-new">${icon('plus')}New team</button></div>
+    <div class="setting-row"><div><strong>Lead guidance</strong><small>Added to the architect's built-in rules for every team.</small></div><button type="button" class="secondary-button agent-guidance-save">Save</button></div>
+    <div class="agent-guidance-row"><textarea class="agent-guidance" aria-label="Lead guidance" rows="3" maxlength="2000" spellcheck="false" placeholder="Leave empty for the built-in rules. For example: you only lead; never edit files yourself."></textarea></div>
+    <p class="agent-guidance-status" role="status" hidden></p>
     <ul class="agent-team-list" aria-label="Agent teams"></ul>
     <form class="agent-team-editor" aria-label="Agent team" hidden>
       <label class="agent-team-field"><span>Team name</span><input type="text" maxlength="80" autocomplete="off" spellcheck="false" aria-label="Team name" placeholder="Reviewers"></label>
@@ -38,6 +41,10 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
   const count = editor.querySelector<HTMLElement>('.agent-team-count')!;
   const leadEffort = editor.querySelector<HTMLSelectElement>('.agent-team-lead-effort')!;
   const error = host.querySelector<HTMLElement>('.agent-team-error')!;
+  const guidance = host.querySelector<HTMLTextAreaElement>('.agent-guidance')!;
+  const guidanceSave = host.querySelector<HTMLButtonElement>('.agent-guidance-save')!;
+  const guidanceStatus = host.querySelector<HTMLElement>('.agent-guidance-status')!;
+  let guidanceEdited = false;
   const harnessName = (id: ProviderId) => options.providers.find(provider => provider.id === id)?.name ?? id;
   let library: TeamLibrary | null = null, editing: TeamProfile | null = null, leadSelected = '', catalog: TeamModel[] = [], shown: TeamModel[] = [], disposed = false, busy = false;
 
@@ -48,8 +55,12 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     list.innerHTML = teams.map(team => `<li class="agent-team-row" data-id="${escape(team.id)}"><span class="provider-small ${team.setup.architect.provider}">${providerLogo(team.setup.architect.provider)}</span><span class="agent-team-name"><strong>${escape(team.name)}</strong><small>${escape(teamDetail(team, harnessName))}</small></span><button type="button" class="secondary-button" data-team-edit aria-label="Edit ${escape(team.name)}">Edit</button><button type="button" class="icon-button" data-team-delete aria-label="Delete ${escape(team.name)}" title="Delete team">${icon('close')}</button></li>`).join('');
   }
   async function refresh(): Promise<void> {
-    try { library = await options.call<TeamLibrary>('architect_profiles'); if (!disposed) renderList(); }
-    catch (cause) { if (!disposed) showError(cause); }
+    try {
+      library = await options.call<TeamLibrary>('architect_profiles');
+      if (disposed) return;
+      if (!guidanceEdited) guidance.value = library.leadGuidance ?? '';
+      renderList();
+    } catch (cause) { if (!disposed) showError(cause); }
   }
 
   /** Installed harnesses' models, plus any saved entry no catalog reports any more. */
@@ -167,6 +178,23 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     if (!team) return;
     if (target!.closest('[data-team-edit]')) void openEditor(team);
     else if (target!.closest('[data-team-delete]')) void remove(team.id);
+  });
+  guidance.addEventListener('input', () => { guidanceEdited = true; guidanceStatus.hidden = true; });
+  guidanceSave.addEventListener('click', () => {
+    if (busy) return;
+    busy = true; error.hidden = true; guidanceSave.disabled = true;
+    const wanted = guidance.value.trim();
+    if (new TextEncoder().encode(wanted).length > 2000) { busy = false; guidanceSave.disabled = false; showError(new Error('Lead guidance must be under 2000 bytes.')); return; }
+    void (async () => {
+      try {
+        library = await options.call<TeamLibrary>('architect_set_lead_guidance', { guidance: wanted || null });
+        if (disposed) return;
+        guidanceEdited = false; guidance.value = library.leadGuidance ?? '';
+        guidanceStatus.textContent = wanted ? 'Lead guidance saved. Every team follows it from its next turn.' : 'Lead guidance cleared. Teams use the built-in rules.';
+        guidanceStatus.hidden = false;
+      } catch (cause) { if (!disposed) showError(cause); }
+      finally { busy = false; if (!disposed) guidanceSave.disabled = false; }
+    })();
   });
   void refresh();
   return () => { disposed = true; host.replaceChildren(); };

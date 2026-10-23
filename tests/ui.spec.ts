@@ -56,7 +56,8 @@ async function disableWallpapers(page: Page): Promise<void> {
 }
 const newTaskHeading = (page: Page) => page.getByRole('heading', { name: /^What should we build in/ });
 const taskProjectPicker = (page: Page) => page.getByRole('dialog', { name: 'Choose project', exact: true });
-const toolByName = (page: Page, name: string) => page.locator('details.tool-activity').filter({ has: page.locator('summary').filter({ hasText: name }) });
+const toolByName = (page: Page, name: string) => page.locator(`details.tool-activity[data-tool-name="${name}"]`)
+  .or(page.locator('details.tool-activity:not([data-tool-name])').filter({ has: page.locator('summary').filter({ hasText: name }) }));
 const turnForTool = (tool: Locator) => tool.locator('xpath=ancestor::details[contains(concat(" ", normalize-space(@class), " "), " turn-activity ")][1]');
 async function expandToolTurn(tool: Locator): Promise<void> {
   const turn = turnForTool(tool);
@@ -188,11 +189,10 @@ test('identifies sample data and renders the desktop workspace without runtime e
   await expect(page.locator('#task-heading')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Projects and tasks' })).toBeVisible();
-  await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeHidden();
-  await page.locator('#inspector-toggle').click();
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
   await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
   await expect(prompt(page)).toBeEnabled();
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.locator('.change-row')).toHaveCount(3);
   await page.screenshot({ path: '/private/tmp/pandacode-activity.png' });
   expect(errors).toEqual([]);
@@ -1413,7 +1413,7 @@ test('chooses the default agent inside Settings without closing the Settings pag
   await trigger.click();
   await expect(menu.getByRole('menuitemradio', { name: 'Claude Code', exact: true })).toBeFocused();
   await page.keyboard.press('End');
-  await expect(menu.getByRole('menuitemradio', { name: 'Oh My Pi', exact: true })).toBeFocused();
+  await expect(menu.getByRole('menuitemradio', { name: 'GitHub Copilot CLI', exact: true })).toBeFocused();
   await page.keyboard.press('Home');
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('ArrowDown');
@@ -1447,7 +1447,7 @@ test('keeps the Settings agent menu clickable at the minimum desktop window size
     return { inViewport: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
       reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) };
   }));
-  expect(hitTargets).toHaveLength(12);
+  expect(hitTargets).toHaveLength(13);
   expect(hitTargets.every(target => target.inViewport && target.reachable)).toBe(true);
   await menu.getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();
   await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toHaveText('Kimi Code');
@@ -1627,12 +1627,12 @@ test('coalesces appearance preferences without restoring stale glass or losing t
 test('expands saved tool commands and file contents after reloading the conversation', async ({ page }) => {
   const read = toolByName(page, 'Read');
   await expandToolTurn(read);
-  await read.locator('summary').click();
+  await read.locator(':scope > summary').click();
   await expect(read.locator('[data-tool-section="input"] pre')).toHaveText('src/components/search.ts');
   await expect(read.locator('[data-tool-section="output"] pre')).toContainText('export function createSearchIndex(items)');
   const bash = toolByName(page, 'Bash');
   await expandToolTurn(bash);
-  await bash.locator('summary').click();
+  await bash.locator(':scope > summary').click();
   await expect(bash.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
   await expect(bash.locator('[data-tool-section="output"] pre')).toContainText('PASS src/components/search.test.ts');
   await expect(bash.locator('[data-tool-section="output"] pre')).toContainText('Tests: 12 passed, 12 total');
@@ -1641,7 +1641,7 @@ test('expands saved tool commands and file contents after reloading the conversa
   await page.screenshot({ path: '/private/tmp/pandacode-tool-details.png' });
   await page.reload();
   await expandToolTurn(bash);
-  await bash.locator('summary').click();
+  await bash.locator(':scope > summary').click();
   await expect(bash.locator('[data-tool-section="output"] pre')).toContainText('Sample output — no command was executed.');
   await expect(page.getByText('Browser preview · sample data', { exact: true })).toBeVisible();
 });
@@ -1670,7 +1670,7 @@ test('coalesces live tool updates while preserving expansion and saves their det
   await expect(live).toHaveAttribute('data-tool-status', 'running');
   await expect(turnForTool(live)).toHaveAttribute('open', '');
   await expandToolTurn(live);
-  await live.locator('summary').click();
+  await live.locator(':scope > summary').click();
   await expect(live.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
   await page.clock.runFor(450);
   await expect(live).toHaveCount(1);
@@ -1690,7 +1690,7 @@ test('coalesces live tool updates while preserving expansion and saves their det
   await page.locator(`.task-item[data-id="${sessionId}"]`).click();
   await expect(saved).toHaveCount(1);
   await expandToolTurn(saved);
-  if (!await saved.evaluate(element => element.hasAttribute('open'))) await saved.locator('summary').click();
+  if (!await saved.evaluate(element => element.hasAttribute('open'))) await saved.locator(':scope > summary').click();
   await expect(saved.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
   await expect(saved.locator('[data-tool-section="output"] pre')).toContainText('Tests: 12 passed, 12 total');
   const persisted = await page.evaluate(async sessionId => {
@@ -1732,7 +1732,8 @@ test('preserves focused tool detail and output scroll across snapshots and savin
   await expandToolTurn(live);
   const turnKey = await turnForTool(live).getAttribute('data-turn-key');
   const key = await live.getAttribute('data-tool-key');
-  await live.locator('summary').click();
+  await live.locator(':scope > summary').click();
+  await live.locator('.tool-trace-raw > summary').click();
   const retainedTool = page.locator(`#transcript [data-tool-key="${key}"]`);
   const output = retainedTool.locator('[data-tool-section="output"] pre');
   await output.focus();
@@ -1801,7 +1802,8 @@ test('caps long live tool activity without dropping the output being read', asyn
   const firstTool = page.locator('.live-tools details.tool-activity').first();
   const key = await firstTool.getAttribute('data-tool-key');
   await expandToolTurn(firstTool);
-  await firstTool.locator('summary').click();
+  await firstTool.locator(':scope > summary').click();
+  await firstTool.locator('.tool-trace-raw > summary').click();
   const output = page.locator(`[data-tool-key="${key}"] [data-tool-section="output"] pre`);
   await expect(output).toHaveText('Keep this first tool output available while I read it.');
   await output.focus();
@@ -1840,7 +1842,7 @@ test('caps long live tool activity without dropping the output being read', asyn
 test('keeps legacy tool output readable without duplicate completion placeholders', async ({ page }) => {
   const legacy = toolByName(page, 'Legacy tool report');
   await expandToolTurn(legacy);
-  await legacy.locator('summary').click();
+  await legacy.locator(':scope > summary').click();
   await expect(legacy.locator('.tool-activity-legacy-body')).toHaveText('Older saved output remains readable.');
   await expect(toolByName(page, 'Tool finished')).toHaveCount(0);
 });
@@ -1877,8 +1879,8 @@ test('collapses turn activity into one compact row while keeping the final answe
   await expect(turn).toHaveAttribute('open', '');
   await expect(commentary).toBeVisible();
   await expandToolTurn(toolByName(page, 'Read'));
-  await expect(toolByName(page, 'Read').locator('summary')).toBeVisible();
-  await expect(toolByName(page, 'Bash').locator('summary')).toBeVisible();
+  await expect(toolByName(page, 'Read').locator(':scope > summary')).toBeVisible();
+  await expect(toolByName(page, 'Bash').locator(':scope > summary')).toBeVisible();
   await page.screenshot({ path: '/private/tmp/pandacode-activity-expanded.png', animations: 'disabled' });
   await summary.focus();
   await page.keyboard.press('Space');
@@ -2503,7 +2505,7 @@ test('removes the old project inspector actions while the new task history loads
     await route.fulfill({ response, body: previewBody(body) });
   });
   await page.reload();
-  await page.locator('#inspector-toggle').click();
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.locator('.change-row')).toHaveCount(3);
   await page.locator('[data-action="open-diff"]').first().click();
   await expect(page.locator('.diff-viewer')).toBeVisible();
@@ -2511,29 +2513,29 @@ test('removes the old project inspector actions while the new task history loads
   await chooseProjectFilter(page, 'pandacode');
   await page.waitForFunction(() => typeof (window as any).__pandacodeReleaseMessages === 'function');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Explore the project');
-  await expect(page.locator('#inspector-content')).toContainText('Loading changes…');
+  await expect(page.locator('#inspector-content')).toContainText('Loading files…');
   await expect(page.getByRole('button', { name: 'Stage file', exact: true })).toHaveCount(0);
   await expect(page.locator('.diff-viewer,.change-row')).toHaveCount(0);
   await page.evaluate(() => { (window as any).__pandacodeReleaseMessages(); delete (window as any).__pandacodeReleaseMessages; });
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.locator('.change-row')).toHaveCount(3);
   await expect(page.locator('#breadcrumb')).toContainText('pandacode');
 });
 
-test('renders provider logos in task rows, composer, messages, picker, and settings', async ({ page }) => {
+test('renders provider logos in task rows, composer, picker, and settings', async ({ page }) => {
   await expect(page.locator('#composer .provider-logo[data-provider="claude"]')).toBeVisible();
-  await expect(page.locator('.agent-message .provider-logo[data-provider="claude"]:visible').first()).toBeVisible();
   for (const provider of ['claude', 'codex', 'kimi']) {
     await expect(page.locator(`#navigation .provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
   }
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  for (const provider of ['claude', 'codex', 'kimi']) {
+  for (const provider of ['claude', 'codex', 'kimi', 'github-copilot']) {
     await expect(picker.locator(`.provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
     await expect(picker.locator(`.model-menu-option .provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
   }
   await page.keyboard.press('Escape');
   const settings = await openSettings(page, 'Agents');
-  for (const provider of ['claude', 'codex', 'kimi']) {
+  for (const provider of ['claude', 'codex', 'kimi', 'github-copilot']) {
     await expect(settings.locator(`.provider-diagnostic .provider-logo[data-provider="${provider}"]`)).toBeVisible();
   }
   await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true }).locator('.provider-logo[data-provider="claude"]')).toBeVisible();
@@ -2627,7 +2629,8 @@ test('changes the empty task project while keeping its draft, harness, model, an
   await modelPicker.getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('project-switch-model');
   await modelPicker.getByRole('button', { name: 'Use "project-switch-model" with Kimi Code', exact: true }).click();
   await expect.poll(() => savedSelection(page)).toEqual({ provider: 'kimi', model: 'project-switch-model' });
-  await page.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await page.locator('[data-action="open-diff"]').first().click();
   await expect(page.locator('.diff-viewer')).toBeVisible();
   await page.getByRole('button', { name: 'Change task project', exact: true }).first().click();
@@ -2753,7 +2756,8 @@ test('applies a delayed project switch after leaving and reselecting the same em
   await expect(prompt(page)).toHaveAttribute('data-session-id', sessionId!);
   await expect(openTaskProject(page)).toHaveText('pandacode');
   await expect(page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true })).toHaveText('pandacode');
-  await page.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toContainText('test/pandacode-project');
   await expect(prompt(page)).toHaveValue('Retain this draft when I return before the project write finishes');
   const projectId = await page.evaluate(async sessionId => {
@@ -2976,7 +2980,6 @@ test('switches harness after the first message while preserving conversation and
 });
 
 test('browses a file and includes its contents as attached message context', async ({ page }) => {
-  await page.locator('#inspector-toggle').click();
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
   await expect(page.locator('.code-preview')).toContainText('"name": "orbit"');
@@ -2991,7 +2994,7 @@ test('browses a file and includes its contents as attached message context', asy
 });
 
 test('reviews a diff, stages changes, and commits within the sample session', async ({ page }) => {
-  await page.locator('#inspector-toggle').click();
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.getByRole('button', { name: 'Commit', exact: true })).toBeDisabled();
   await page.locator('[data-action="open-diff"]').first().click();
   await expect(page.locator('.diff-viewer')).toContainText('renderResults');
@@ -3167,7 +3170,8 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await expect(page.locator('#terminal-drawer')).toBeHidden();
   await expect.poll(() => page.evaluate(() => (window as any).__pandacodeWorktreeCalls.filter((call: any) => call.command === 'close_terminal').length)).toBe(0);
-  await page.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.locator('#inspector-content')).toContainText('codex/worktree-routing');
   await page.locator('[data-action="open-diff"]').first().click();
   await expect(page.locator('.diff-viewer')).toBeVisible();
@@ -3213,17 +3217,19 @@ test('clears worktree inspector actions immediately and ignores stale same-proje
   await submitWorktree(page, 'codex/worktree-races');
   await expect(newTaskHeading(page)).toBeVisible();
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
-  await page.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await page.locator('[data-action="open-diff"]').first().click();
   await expect(page.locator('.diff-viewer')).toBeVisible();
   await page.evaluate(() => { (window as any).__pandacodeDelayWorktreeHistory = true; });
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pandacodeReleaseWorktreeHistory)).toBe('function');
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.locator('.diff-viewer,.change-row')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Stage file', exact: true })).toHaveCount(0);
   await page.evaluate(() => { (window as any).__pandacodeDelayWorktreeHistory = false; (window as any).__pandacodeReleaseWorktreeHistory(); });
   await expect(page.locator('.change-row')).toHaveCount(3);
-  await page.locator('#inspector-toggle').click();
+  await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
   await page.evaluate(() => { (window as any).__pandacodeDelayWorktreeDiff = true; });
   await page.locator('[data-action="open-diff"]').first().click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pandacodeReleaseWorktreeDiff)).toBe('function');
@@ -3459,4 +3465,25 @@ test('streaming keeps the transcript at the bottom after sending and leaves a re
   await expect(reply).toHaveCount(2);
   await expect(page.locator('#stream-region .live-message')).toHaveCount(0);
   expect(Math.abs(await historyOffset(anchor) - anchorY)).toBeLessThan(2);
+});
+
+test('shows a folder’s new-task button on focus and hover and starts a task in that project', async ({ page }) => {
+  const second = page.locator('#navigation .folder-group').nth(1);
+  const name = (await second.locator('.folder-heading span').last().textContent())!;
+  const add = second.locator('.folder-new-task');
+  await expect(add).toHaveCSS('opacity', '0');
+  await add.focus();
+  await expect(add).toHaveCSS('opacity', '1');
+  await page.mouse.move(0, 0);
+  await add.blur();
+  await second.locator('.folder-row').hover();
+  await expect(add).toHaveCSS('opacity', '1');
+  await add.click();
+  await expect(newTaskHeading(page)).toHaveAccessibleName(`What should we build in ${name}?`);
+  // The heading itself still only folds the project's tasks.
+  const heading = second.locator('.folder-heading');
+  const expanded = await heading.getAttribute('aria-expanded');
+  await heading.click();
+  await expect(heading).toHaveAttribute('aria-expanded', expanded === 'true' ? 'false' : 'true');
+  await expect(newTaskHeading(page)).toHaveAccessibleName(`What should we build in ${name}?`);
 });

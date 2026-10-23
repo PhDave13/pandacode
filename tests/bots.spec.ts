@@ -155,6 +155,31 @@ test.describe('bots', () => {
     await expect(crumb(page)).toContainText('Scout');
   });
 
+  test('GitHub Copilot is selectable in bot setup and appears in the bot chat model picker', async ({ page }) => {
+    await openBots(page);
+    const form = bots(page).locator('.bots-form');
+    const provider = form.locator('select[name=provider]');
+    await expect(provider.locator('option[value="github-copilot"]')).toHaveCount(1);
+    await provider.selectOption('github-copilot');
+    const model = form.locator('select[name=model]');
+    await expect(model).toHaveValue('default');
+    await expect(model.locator('option[value="default"]')).toHaveText('Default');
+    await expect(form.locator('select[name=mode] option[value="auto"]')).toHaveCount(0);
+    await expect(form.locator('select[name=mode] option')).toHaveCount(3);
+
+    await form.getByRole('textbox', { name: 'Name' }).fill('Copilot bot');
+    await bots(page).getByRole('button', { name: 'Create bot', exact: true }).click();
+    await expect(bots(page)).toBeHidden();
+    await expect(crumb(page)).toContainText('Copilot bot');
+    await expect(page.locator('#composer .provider-logo[data-provider="github-copilot"]')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+    const choice = picker.locator('.model-menu-option[data-provider="github-copilot"][data-model="default"]');
+    await expect(choice).toContainText('Default');
+    await expect(choice).toHaveAttribute('aria-current', 'true');
+  });
+
   test('the header pauses the bot and the welcome opens the right settings', async ({ page }) => {
     await newBot(page);
     await page.locator('#breadcrumb').getByRole('button', { name: 'Pause Scout' }).click();

@@ -1,5 +1,5 @@
 name: Release
-# Pushing a tag vX.Y.Z builds macOS (Apple silicon), Windows x64, Linux x64 and Linux arm64
+# Pushing a tag vX.Y.Z builds macOS (Apple silicon and Intel), Windows x64 and arm64, Linux x64 and Linux arm64
 # installers and publishes them on a GitHub Release whose notes come from
 # releases/X.Y.Z.md. A manual run builds the installers as workflow artifacts
 # and publishes only when `publish` is checked. See docs/releasing.md.
@@ -46,7 +46,10 @@ jobs:
       matrix:
         include:
           - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin }
+          # Native Intel runner: build.mjs only builds on the target's own host architecture.
+          - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin }
           - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc }
           - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
@@ -127,7 +130,9 @@ jobs:
             cat "releases/$VERSION.md"
             printf '\n\n## Installing\n\n'
             printf -- '- **macOS (Apple silicon):** open `PandaCode-macOS-arm64.dmg` and drag PandaCode to Applications. If macOS says it cannot verify the app, open System Settings > Privacy & Security and choose **Open Anyway**.\n'
+            printf -- '- **macOS (Intel):** open `PandaCode-macOS-x64.dmg` and drag PandaCode to Applications (same **Open Anyway** step if macOS cannot verify the app).\n'
             printf -- '- **Windows x64:** run `PandaCode-Windows-x64-setup.exe`. If SmartScreen warns about an unknown publisher, choose **More info > Run anyway**.\n'
+            printf -- '- **Windows arm64:** run `PandaCode-Windows-arm64-setup.exe` (same SmartScreen step).\n'
             printf -- '- **Linux x64:** `chmod +x PandaCode-Linux-x86_64.AppImage` and run it.\n'
             printf -- '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.\n'
             printf -- '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build (macOS: signed locally automatically).\n\n'

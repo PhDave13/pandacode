@@ -146,8 +146,22 @@ fn validate_context(context: &LaunchContext) -> Result<()> {
     Ok(())
 }
 fn validate_selection(selection: &ModelSelection) -> Result<()> {
-    if !["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "omp"]
-        .contains(&selection.provider.as_str())
+    if ![
+        "claude",
+        "codex",
+        "kimi",
+        "opencode",
+        "glm",
+        "antigravity",
+        "grok",
+        "mimo",
+        "pi",
+        "deepseek",
+        "commandcode",
+        "omp",
+        "github-copilot",
+    ]
+    .contains(&selection.provider.as_str())
         || selection.model.trim().is_empty()
         || selection.model.len() > 200
         || selection.model.chars().any(char::is_control)
@@ -1725,7 +1739,21 @@ mod tests {
         assert_eq!(LaunchContext::default().mode, "full");
         let store = storage::Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
-        for provider in ["claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "omp"] {
+        for provider in [
+            "claude",
+            "codex",
+            "kimi",
+            "glm",
+            "opencode",
+            "antigravity",
+            "grok",
+            "mimo",
+            "pi",
+            "deepseek",
+            "commandcode",
+            "omp",
+            "github-copilot",
+        ] {
             for mode in [None, Some("ask"), Some("auto"), Some("plan"), Some("full")] {
                 let mut saved = serde_json::json!({"provider":provider,"model":"default"});
                 if let Some(mode) = mode {

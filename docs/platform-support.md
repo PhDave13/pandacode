@@ -9,7 +9,9 @@ validation is incomplete.
 | Target | Platform requirements | Release asset |
 | --- | --- | --- |
 | `darwin-aarch64` | Apple silicon, macOS 12 or later | `PandaCode-macOS-arm64.dmg` containing `PandaCode.app` |
+| `darwin-x86_64` | Intel Mac, macOS 12 or later | `PandaCode-macOS-x64.dmg` containing `PandaCode.app` |
 | `windows-x86_64` | x64 Windows 10 version 1809 or later, or Windows 11 | `PandaCode-Windows-x64-setup.exe` (current-user NSIS installer) |
+| `windows-aarch64` | Windows 11 on ARM (arm64) | `PandaCode-Windows-arm64-setup.exe` (current-user NSIS installer, native arm64) |
 | `linux-x86_64` | x64 Ubuntu 22.04 or a compatible newer distribution, glibc 2.35+, graphical X11 or XWayland session | `PandaCode-Linux-x86_64.AppImage` built on Ubuntu 22.04 |
 | `linux-aarch64` | arm64 Ubuntu 24.04 or a compatible newer distribution, glibc 2.39+, graphical X11 or XWayland session | `PandaCode-Linux-aarch64.AppImage` built on Ubuntu 24.04 |
 

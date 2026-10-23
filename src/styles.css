@@ -64,6 +64,7 @@ button .icon{pointer-events:none}
 .task-indicator.running{background:#ac8100;box-shadow:none;animation:breathe 1.5s infinite}
 .task-indicator.attention{background:#a45e13;box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .3)}
 .provider-logo{width:20px;height:20px;display:inline-block;object-fit:contain;flex-shrink:0;vertical-align:middle;pointer-events:none}
+.provider-logo[data-provider="github-copilot"]{color:var(--text)}
 .provider-logo[data-provider="codex"]{transform:scale(1.25)}
 .provider-logo[data-provider="pi"]{image-rendering:pixelated}
 .task-provider{width:18px;height:18px;opacity:.8;flex-shrink:0;align-self:center}
@@ -278,6 +279,10 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 .branch-card{height:49px;margin:4px 18px 0;display:flex;justify-content:space-between;align-items:center;gap:5px;font-size:.77rem;color:var(--text);border-bottom:1px solid var(--border)}
 .branch-card>span{display:flex;align-items:center;gap:7px;min-width:0}
 .branch-card>span>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jj-chip,.jj-bookmark{flex:none;font-size:11px;padding:1px 6px;border-radius:999px;background:rgb(var(--accent-rgb) / .14);color:var(--accent-ink);white-space:nowrap}
+.jj-actions{display:flex;gap:6px}
+.jj-actions .commit-button{flex:1}
+.jj-log-row.current strong::before{content:'@ ';color:var(--accent)}
 .branch-card .icon{width:13px;height:13px;color:var(--muted)}
 .branch-card button{width:20px;height:20px}
 .branch-card button .icon{width:12px}
@@ -824,6 +829,10 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
 .breadcrumb>.bot-crumb-settings:hover{background:color-mix(in srgb,var(--text) 6%,transparent);color:var(--text)}
 .breadcrumb>.bot-crumb-settings .icon{width:14px;height:14px}
 .bot-thread .composer-context{display:none}
+/* Projectless chats: no project bar, deploy or run script. */
+.chat-thread :is(.composer-context,#deploy-button,#run-project-button){display:none!important}
+.sidebar .chats-group{margin-bottom:8px}
+.chat-welcome{display:grid;justify-items:center;gap:12px}
 .bot-welcome-avatar{display:inline-grid;place-items:center;width:58px;height:58px;margin-bottom:20px;border-radius:50%;background:color-mix(in srgb,var(--accent) 55%,var(--raised));color:var(--on-accent);font-size:1.6rem;font-weight:650;box-shadow:0 12px 32px -12px color-mix(in srgb,var(--accent) 70%,transparent)}
 .bot-welcome>p{max-width:460px;margin:10px auto 0;color:var(--muted);font-size:.94rem;line-height:1.55}
 .bot-welcome .prompt-suggestions{margin:24px auto 0;text-align:left}

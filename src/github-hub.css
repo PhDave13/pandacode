@@ -117,6 +117,15 @@ button.gh-run-pull:hover{color:var(--text);background:var(--gh-hover)}
 .gh-run-details li .icon{width:13px;height:13px;flex:none;color:var(--muted)}
 .gh-run-details .gh-duration{color:var(--muted)}
 .gh-run-details .gh-act{min-height:22px;padding:0 6px}
+.gh-run-details li.gh-job,.gh-run-details li.gh-attempt-item{display:block}
+.gh-job-head{display:flex;align-items:center;gap:8px;min-height:26px}
+.gh-run-details .gh-steps{margin:0 0 4px 10px;padding-left:10px;border-left:1px solid var(--gh-line);list-style:none}
+.gh-run-details .gh-step{min-height:20px;font-size:.74rem}
+.gh-step .gh-status{font-size:.68rem}
+.gh-job-summary{max-height:240px;overflow:auto;margin:2px 0 6px 10px;padding:6px 10px;border-radius:4px;background:var(--gh-inset);font-size:.76rem;overflow-wrap:anywhere}
+.gh-job-summary>:first-child{margin-top:0}.gh-job-summary>:last-child{margin-bottom:0}
+.gh-attempts{grid-column:1/-1}
+.gh-workflow-check{margin-left:auto}
 .gh-run-blocked{grid-column:1/-1;display:flex;gap:6px;align-items:flex-start;color:var(--danger)}
 .gh-run-blocked .icon{width:14px;height:14px;flex:none}
 .gh-diff{display:inline-flex;gap:5px;font:500 .72rem/1 var(--mono,ui-monospace,monospace);font-variant-numeric:tabular-nums}

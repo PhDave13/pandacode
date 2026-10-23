@@ -183,7 +183,7 @@ test.describe('streamed responses', () => {
         return first;
       }, id);
       await expect(liveGroups(page)).toHaveCount(1);
-      await expect(liveGroups(page).first().locator('.tool-group-label')).toHaveText('2 tools');
+      await expect(liveGroups(page).first().locator('.tool-group-label')).toHaveText('Running 1 command and reading 1 file…');
       await expect(liveGroups(page).first()).not.toHaveAttribute('open', '');
       await expect(live(page)).toBeVisible();
       await expect(generating).toBeHidden();
@@ -197,7 +197,7 @@ test.describe('streamed responses', () => {
       await expect(page.locator('#stream-region [data-commentary]')).toHaveText('Inspecting the project.');
       const thirdToolId = await page.evaluate(id => (window as any).__streamFixtures[id].startTool(), id);
       await expect(liveGroups(page)).toHaveCount(2);
-      await expect(liveGroups(page).last().locator('.tool-group-label')).toHaveText('1 tool');
+      await expect(liveGroups(page).last().locator('.tool-group-label')).toHaveText('Running 1 command…');
       await expect(liveGroups(page).last()).not.toHaveAttribute('open', '');
       await expect(generating).toBeHidden();
       await expect.poll(() => liveSequence(page)).toEqual(['Inspecting the project.', '2 tools', 'Found one issue.', '1 tool']);
@@ -207,6 +207,7 @@ test.describe('streamed responses', () => {
       const firstTool = page.locator(`#stream-region .tool-activity[data-tool-key="tool:${firstToolId}"]`);
       await firstGroup.locator(':scope > summary').click();
       await firstTool.locator(':scope > summary').click();
+      await firstTool.locator('.tool-trace-raw > summary').click();
       await page.evaluate(({ id, toolId }) => (window as any).__streamFixtures[id].updateTool('running', toolId), { id, toolId: firstToolId });
       await expect(firstGroup).toHaveAttribute('open', '');
       await expect(firstTool).toHaveAttribute('open', '');
@@ -257,12 +258,12 @@ test.describe('streamed responses', () => {
         const fixture = (window as any).__streamFixtures[id];
         for (let i = 0; i < 6; i++) fixture.tool();
       }, id);
-      await expect(liveGroups(page).locator('.tool-group-label')).toHaveText(['5 tools', '1 tool']);
+      await expect(liveGroups(page).locator('.tool-group-label')).toHaveText(['Read 5 files', 'Read 1 file']);
       await expect.poll(() => liveSequence(page)).toEqual(['I’m checking the project files.', '5 tools', '1 tool']);
 
       await push(page, id, 'The files look good. I’m checking one last detail.');
       await page.evaluate(id => (window as any).__streamFixtures[id].tool(), id);
-      await expect(liveGroups(page).locator('.tool-group-label')).toHaveText(['5 tools', '1 tool', '1 tool']);
+      await expect(liveGroups(page).locator('.tool-group-label')).toHaveText(['Read 5 files', 'Read 1 file', 'Read 1 file']);
       await expect.poll(() => liveSequence(page)).toEqual(['I’m checking the project files.', '5 tools', '1 tool', 'The files look good. I’m checking one last detail.', '1 tool']);
       await expect(page.locator('#stream-region .tool-activity')).toHaveCount(7);
       for (const group of await liveGroups(page).all()) await expect(group).not.toHaveAttribute('open', '');
@@ -276,10 +277,10 @@ test.describe('streamed responses', () => {
       }
       await page.screenshot({ path: `/private/tmp/pandacode-chronological-tools-${view}-${browserName}.png` });
       await finish(page, id);
-      await expect(transcript(page).locator('.tool-group-label')).toHaveText(['5 tools', '1 tool', '1 tool']);
+      await expect(transcript(page).locator('.tool-group-label')).toHaveText(['Read 5 files', 'Read 1 file', 'Read 1 file']);
       await expect.poll(() => transcript(page).locator('.turn-activity-body .message-content, .turn-activity-body .tool-group').evaluateAll(nodes => nodes.map(node => node.matches('.tool-group')
         ? node.querySelector('.tool-group-label')?.textContent
-        : node.textContent?.trim()))).toEqual(['I’m checking the project files.', '5 tools', '1 tool', 'The files look good. I’m checking one last detail.', '1 tool']);
+        : node.textContent?.trim()))).toEqual(['I’m checking the project files.', 'Read 5 files', 'Read 1 file', 'The files look good. I’m checking one last detail.', 'Read 1 file']);
     });
 
     test(`shows partial Markdown in ${view} before completion and keeps the response and dropdown steady`, async ({ page }) => {

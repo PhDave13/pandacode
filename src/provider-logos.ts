@@ -1,5 +1,6 @@
 import type { ProviderId } from './types';
 import { escape } from './dom';
+import githubCopilotLogo from './assets/providers/github-copilot.svg?raw';
 
 // Original provider assets; see docs/brand-assets.md for provenance.
 // Harnesses without an asset (omp) show no mark; their name stands alone.
@@ -19,6 +20,11 @@ const logos: Partial<Record<ProviderId, string>> = {
 
 /** Decorative provider mark. The surrounding control supplies its accessible name. */
 export function providerLogo(id: ProviderId, cls = ''): string {
-  if (!Object.hasOwn(logos, id)) return '';
-  return `<img class="provider-logo${cls ? ` ${escape(cls)}` : ''}" data-provider="${id}" src="${escape(logos[id]!)}" width="20" height="20" alt="" aria-hidden="true" draggable="false">`;
+  const className = `provider-logo${cls ? ` ${escape(cls)}` : ''}`;
+  if (id === 'github-copilot') {
+    return githubCopilotLogo.replace('<svg ', `<svg class="${className}" data-provider="github-copilot" aria-hidden="true" focusable="false" `);
+  }
+  const src = logos[id];
+  if (!src) return '';
+  return `<img class="${className}" data-provider="${id}" src="${escape(src)}" width="20" height="20" alt="" aria-hidden="true" draggable="false">`;
 }

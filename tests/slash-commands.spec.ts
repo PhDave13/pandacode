@@ -308,7 +308,7 @@ test.describe('slash commands app integration', () => {
     await expect(prompt).toBeEnabled();
     await prompt.fill('/skill:');
     await expect(menu(page).getByRole('option')).toContainText('/skill:project-guide');
-    await page.getByRole('button', { name: /^New task/ }).click();
+    await page.locator('.new-task-button').click();
     await expect(prompt).toBeEnabled();
     await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
     await page.locator('.model-menu').getByRole('button', { name: 'Codex · GPT-6-Astra', exact: true }).click();

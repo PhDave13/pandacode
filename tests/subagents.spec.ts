@@ -227,7 +227,7 @@ test.describe('subagents', () => {
       await expect(response(page)).toContainText('Found the issue.');
       await expect(response(page).locator('strong')).toHaveText('Found the issue.');
       await expect(panel(page).locator('.subagent-tools')).toContainText('Read');
-      await panel(page).locator('.subagent-tools summary').click();
+      await panel(page).locator('.subagent-tools details.tool-activity > summary').click();
       await expect(panel(page).locator('.subagent-tools')).toContainText('src/search.ts');
       await expect(panel(page).locator('.subagent-tools')).toContainText('const index = buildIndex(items);');
       await page.screenshot({ path: `/private/tmp/pandacode-subagents-${view}-detail.png`, animations: 'disabled' });
@@ -352,7 +352,7 @@ test.describe('subagents', () => {
     await row(page, 'unsafe').click();
     await expect(response(page)).toContainText('Visible answer.');
     await expect(response(page).locator('strong')).toHaveText('Visible answer.');
-    await panel(page).locator('.subagent-tools summary').click();
+    await panel(page).locator('.subagent-tools details.tool-activity > summary').click();
     await expect(panel(page).locator('.subagent-tools')).toContainText(malicious);
     await expect(panel(page).locator('script, iframe, img[onerror], svg[onload], a[href^="javascript:"]')).toHaveCount(0);
     expect(await page.evaluate(() => (window as any).__subagentXss)).toBeUndefined();
@@ -382,10 +382,10 @@ test.describe('subagents', () => {
     await installSubagents(page, { 'session-1': [child('long-tools', 'Long tool reviewer', { tools })] });
     await trigger(page).click();
     await row(page, 'long-tools').click();
-    const disclosures = panel(page).locator('.subagent-tools details');
+    const disclosures = panel(page).locator('.subagent-tools details.tool-activity');
     await expect(disclosures).toHaveCount(2);
-    await disclosures.nth(0).locator('summary').click();
-    await disclosures.nth(1).locator('summary').click();
+    await disclosures.nth(0).locator(':scope > summary').click();
+    await disclosures.nth(1).locator(':scope > summary').click();
     await upsert(page, [child('long-tools', 'Long tool reviewer', {
       tools: tools.map((tool, index) => ({ ...tool, status: 'completed', output: `${index === 0 ? 'First' : 'Second'} complete output.` })),
       updatedAt: 1_800_000_000_020,
@@ -405,7 +405,8 @@ test.describe('subagents', () => {
     await installSubagents(page, { 'session-1': [child('reader', 'Log reviewer', { tools: [tool] })] });
     await trigger(page).click();
     await row(page, 'reader').click();
-    await panel(page).locator('.subagent-tools summary').click();
+    await panel(page).locator('.subagent-tools details.tool-activity > summary').click();
+    await panel(page).locator('.subagent-tools .tool-trace-raw > summary').click();
     const output = panel(page).locator('.subagent-tools pre[aria-label="Tool output"]');
     await output.focus();
     await output.evaluate(element => { element.scrollTop = 120; });

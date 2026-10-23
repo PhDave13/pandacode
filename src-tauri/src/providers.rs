@@ -36,6 +36,7 @@ mod codex_stream_tests;
 pub(crate) mod concurrent_process_tests;
 mod commandcode;
 mod extra_models;
+mod github_copilot;
 mod glm;
 mod mimo;
 mod deepseek;
@@ -64,6 +65,21 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
+const PROVIDERS: [(&str, &str); 13] = [
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("kimi", "Kimi Code"),
+    ("opencode", "OpenCode"),
+    ("glm", "GLM Coding Plan"),
+    ("antigravity", "Antigravity"),
+    ("grok", "Grok Build"),
+    ("mimo", "MiMo Token Plan"),
+    ("pi", "Pi"),
+    ("deepseek", "DeepSeek"),
+    ("commandcode", "Command Code"),
+    ("omp", "Oh My Pi"),
+    ("github-copilot", "GitHub Copilot CLI"),
+];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
@@ -433,7 +449,11 @@ pub struct ReasoningEffortInfo {
 
 pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result<(), String> {
     let valid = match (provider, effort) {
-        ("claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "omp", None) => true,
+        (
+            "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
+            | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot",
+            None,
+        ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
             ["low", "medium", "high", "xhigh", "max"].contains(&value)
         }
@@ -487,15 +507,19 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
     if let Some(path) = crate::provider_settings::executable_override(name) {
         return Some(path);
     }
-    let name = match name {
+    launch::find(executable_name(name))
+}
+
+fn executable_name(name: &str) -> &str {
+    match name {
         "glm" | "mimo" => "claude",
         "antigravity" if cfg!(windows) => "agy_acp_server",
         "antigravity" => "agy_acp_server.par",
         "deepseek" => "dsh",
         "commandcode" => "command-code",
+        "github-copilot" => "copilot",
         other => other,
-    };
-    launch::find(name)
+    }
 }
 
 /// Any command-line tool (`gh`, `git`…) where an interactive shell would find it, even
@@ -574,21 +598,7 @@ fn version(path: &Path) -> Option<String> {
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
-    [
-        ("claude", "Claude Code"),
-        ("codex", "Codex"),
-        ("kimi", "Kimi Code"),
-        ("opencode", "OpenCode"),
-        ("glm", "GLM Coding Plan"),
-        ("antigravity", "Antigravity"),
-        ("grok", "Grok Build"),
-        ("mimo", "MiMo Token Plan"),
-        ("pi", "Pi"),
-        ("deepseek", "DeepSeek"),
-        ("commandcode", "Command Code"),
-        ("omp", "Oh My Pi"),
-    ]
-    .into_iter()
+    PROVIDERS.into_iter()
     .map(|(id, name)| {
         let path = executable(id);
         ProviderInfo {
@@ -635,6 +645,18 @@ pub async fn list_models(provider: &str) -> Result<Vec<ModelInfo>, String> {
     list_model_catalog(provider).await
 }
 
+fn model_discovery_index(provider: &str) -> Option<usize> {
+    PROVIDERS
+        .iter()
+        .position(|(id, _)| *id == provider)
+}
+
+fn model_discovery_semaphores(
+) -> &'static [tokio::sync::Semaphore; PROVIDERS.len()] {
+    static DISCOVERY: OnceLock<[tokio::sync::Semaphore; PROVIDERS.len()]> = OnceLock::new();
+    DISCOVERY.get_or_init(|| std::array::from_fn(|_| tokio::sync::Semaphore::new(1)))
+}
+
 fn selected_opencode_models(catalog: Vec<ModelInfo>, selected: &[String]) -> Vec<ModelInfo> {
     let mut available: HashMap<_, _> = catalog
         .into_iter()
@@ -655,25 +677,12 @@ fn selected_opencode_models(catalog: Vec<ModelInfo>, selected: &[String]) -> Vec
 }
 
 pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>, String> {
-    static DISCOVERY: OnceLock<[tokio::sync::Semaphore; 12]> = OnceLock::new();
-    let index = match provider {
-        "claude" => 0,
-        "codex" => 1,
-        "kimi" => 2,
-        "opencode" => 3,
-        "glm" => 4,
-        "antigravity" => 5,
-        "grok" => 6,
-        "mimo" => 7,
-        "pi" => 8,
-        "deepseek" => 9,
-        "commandcode" => 10,
-        "omp" => 11,
-        _ => return Err("Unknown provider".into()),
-    };
-    let semaphore =
-        &DISCOVERY.get_or_init(|| std::array::from_fn(|_| tokio::sync::Semaphore::new(1)))[index];
-    let _permit = if matches!(provider, "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode") {
+    let index = model_discovery_index(provider).ok_or("Unknown provider")?;
+    let semaphore = &model_discovery_semaphores()[index];
+    let _permit = if matches!(
+        provider,
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot"
+    ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
         tokio::time::timeout(Duration::from_secs(if provider == "opencode" { 20 } else { 65 }), semaphore.acquire())
@@ -698,6 +707,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "pi" | "omp" => pi::models(&path, provider).await,
         "deepseek" => deepseek::models(&path).await,
         "commandcode" => commandcode::models(&path).await,
+        "github-copilot" => github_copilot::models(&path).await,
         _ => unreachable!(),
     }
 }
@@ -1620,7 +1630,7 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
@@ -1652,7 +1662,7 @@ impl Protocol {
                 };
                 json!({"id":request["id"],"result":result})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -1678,7 +1688,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -1707,7 +1717,7 @@ impl Protocol {
             "codex" => self.codex(value).map(|step| self.steered(step)),
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "github-copilot" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2641,6 +2651,7 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
         }
         "pi" | "omp" => pi::configure(command, config),
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" => acp::configure(command, config),
+        "github-copilot" => acp::configure(command, config),
         "kimi" => {
             if use_model {
                 command.args(["--model", &config.model]);
@@ -2702,8 +2713,22 @@ async fn run_inner(
     input: UnboundedReceiver<RunInput>,
     host: Option<ToolHost>,
 ) -> Result<(), String> {
-    if !["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "omp"]
-        .contains(&config.provider.as_str())
+    if ![
+        "claude",
+        "codex",
+        "kimi",
+        "opencode",
+        "glm",
+        "antigravity",
+        "grok",
+        "mimo",
+        "pi",
+        "deepseek",
+        "commandcode",
+        "omp",
+        "github-copilot",
+    ]
+    .contains(&config.provider.as_str())
     {
         return Err("Unknown provider".into());
     }
@@ -2711,12 +2736,22 @@ async fn run_inner(
         return Err("Unknown permission mode".into());
     }
     validate_reasoning_effort(&config.provider, config.reasoning_effort.as_deref())?;
-    let path = executable(&config.provider)
+    let connection = crate::connections::for_task(&config.session_id, &config.provider)
+        .map(|connection| crate::connections::launch(&connection))
+        .transpose()?;
+    let path = connection
+        .as_ref()
+        .and_then(|connection| connection.executable.clone())
+        .or_else(|| executable(&config.provider))
         .ok_or_else(|| format!("{} CLI is not installed or is not on PATH", config.provider))?;
     config.cwd = external_path(&config.cwd);
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
     let mut command = command(&path)?;
     configure_command(&mut command, &config);
+    // A named connection's arguments and environment win over the global setup.
+    if let Some(connection) = &connection {
+        connection.apply(&mut command);
+    }
     let key = if config.provider == "glm" {
         Some(glm::configure(&mut command)?)
     } else if config.provider == "mimo" {
@@ -2738,8 +2773,10 @@ async fn run_inner(
     )
     .await
     .map_err(|error| {
-        key.as_ref()
-            .map_or(error.clone(), |key| error.replace(key, "[redacted]"))
+        let error = key
+            .as_ref()
+            .map_or(error.clone(), |key| error.replace(key, "[redacted]"));
+        connection.as_ref().map_or(error.clone(), |connection| connection.redact(&error))
     })
 }
 
@@ -2846,7 +2883,11 @@ async fn run_process_with_tools(
             };
             (host.map(host_tools::HostTools::new).transpose()?, server)
         }
-        ("claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp", Some(host)) => (
+        (
+            "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
+            | "deepseek" | "commandcode" | "omp" | "github-copilot",
+            Some(host),
+        ) => (
             None,
             mcp_host::Server::start_for_run(
                 host,
@@ -3052,6 +3093,14 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn github_copilot_is_discovered_with_its_direct_cli_executable_and_no_effort_override() {
+        assert!(PROVIDERS.contains(&("github-copilot", "GitHub Copilot CLI")));
+        assert_eq!(executable_name("github-copilot"), "copilot");
+        assert!(validate_reasoning_effort("github-copilot", None).is_ok());
+        assert!(validate_reasoning_effort("github-copilot", Some("high")).is_err());
+    }
 
     pub(super) fn config(provider: &str) -> RunConfig {
         RunConfig {
@@ -4019,6 +4068,17 @@ mod tests {
     #[tokio::test]
     async fn model_listing_rejects_unknown_provider_without_starting_a_process() {
         assert_eq!(list_models("shell").await.unwrap_err(), "Unknown provider");
+    }
+
+    #[test]
+    fn every_registered_provider_has_a_model_discovery_slot() {
+        assert_eq!(model_discovery_semaphores().len(), PROVIDERS.len());
+        for (index, (id, _)) in PROVIDERS.iter().enumerate() {
+            assert_eq!(model_discovery_index(id), Some(index));
+            assert!(index < model_discovery_semaphores().len());
+        }
+        assert!(PROVIDERS.iter().any(|(id, _)| *id == "github-copilot"));
+        assert_eq!(model_discovery_index("not-a-provider"), None);
     }
 
     #[test]

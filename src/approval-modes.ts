@@ -8,6 +8,8 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
   const pi = provider === 'pi' || provider === 'omp' ? (provider === 'omp' ? 'omp' : 'Pi') : '';
   const standard: ApprovalMode = { id: 'ask', label: 'Standard', icon: 'check', description: provider === 'codex'
     ? 'Work in this project. Ask you when an action needs extra permission.'
+    : provider === 'github-copilot'
+    ? 'Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.'
     : provider === 'grok'
     ? 'Grok asks before edits and commands, whatever its own config says.'
     : pi
@@ -25,7 +27,12 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     ? `${pi} runs every tool without asking.`
     : provider === 'deepseek'
     ? 'No sandbox: DeepSeek runs every tool without asking.'
+    : provider === 'github-copilot'
+    ? 'Use Copilot Agent mode with Allow All on. Copilot automatically approves tool, path, and URL requests.'
     : 'Run tools without approval prompts, including outside this project.' };
+  if (provider === 'github-copilot') return [standard,
+    { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Use Copilot Plan mode. Read, search, and think requests are allowed; other permission requests are declined.' },
+    full];
   return [standard, provider === 'deepseek'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
     : ['claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode'].includes(provider)

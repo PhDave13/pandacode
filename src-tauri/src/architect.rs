@@ -47,7 +47,21 @@ const AGENTS_STOPPING: &str = "Wait for the current agents to stop before resumi
 const CONTINUE_BODY: &str = "Background commands, monitors and scheduled wakeups do not report back after your turn ends, so nothing is waiting on them. Continue now: dispatch the remaining work to workers, run any check you need in the foreground and wait for it in this turn, or call finish_team with a summary if the objective is done. Do not end this turn waiting on anything.";
 const FAILED_PREFIX: &str = "A worker failed while other workers are still running, for this objective: ";
 const FAILED_BODY: &str = "\n\nRead the failed worker's error and result. Retry it with followup_worker, dispatch a replacement, or leave it for the final review. Other workers are still active: do not edit their files, repeat completed assignments, or poll. You may end this turn after you act; settled work will trigger review.\n\n";
-const HARNESSES: [&str; 12] = ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "omp"];
+const HARNESSES: [&str; 13] = [
+    "claude",
+    "codex",
+    "kimi",
+    "opencode",
+    "glm",
+    "antigravity",
+    "grok",
+    "mimo",
+    "pi",
+    "deepseek",
+    "commandcode",
+    "omp",
+    "github-copilot",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -413,12 +427,17 @@ fn rules(store: &Store, team: &TeamSnapshot, sid: &str) -> Result<(String, Strin
         } else {
             format!("Worker profiles are reusable: several assignments may use the same profile, and profile count does not limit parallel workers. Available profiles: {}.", profiles)
         };
+        // A team's own guidance wins; otherwise the app-wide one from Settings applies.
+        // A corrupt library must not stop the rules from going out.
+        let default_guidance = profiles::read(store).ok().and_then(|library| library.lead_guidance);
         let guidance = team
             .config
             .lead_guidance
             .as_deref()
             .map(str::trim)
             .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .or(default_guidance)
             .map(|text| {
                 format!("\n\nTeam guidance from the user (follow it alongside these rules, every turn):\n{text}")
             })

@@ -55,6 +55,7 @@ test('startup smoke refuses local, self-hosted, and mismatched systems', () => {
 });
 
 test('only the exact target/version package is launched', () => {
+  assert.equal(selectPackage(['PandaCode_1.2.3_arm64-setup.exe'], '1.2.3', 'windows-aarch64'), 'PandaCode_1.2.3_arm64-setup.exe');
   assert.equal(selectPackage(['PandaCode_1.2.3_x64-setup.exe', 'PandaCode_1.2.3_x64-setup.exe.sig'], '1.2.3', 'windows-x86_64'), 'PandaCode_1.2.3_x64-setup.exe');
   assert.equal(selectPackage(['PandaCode_1.2.3_amd64.AppImage'], '1.2.3', 'linux-x86_64'), 'PandaCode_1.2.3_amd64.AppImage');
   assert.equal(selectPackage(['PandaCode_1.2.3_aarch64.AppImage'], '1.2.3', 'linux-aarch64'), 'PandaCode_1.2.3_aarch64.AppImage');

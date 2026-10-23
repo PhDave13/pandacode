@@ -35,10 +35,14 @@ export function issuePrompt(action: IssueAction, issue: IssueRef): string {
 
 /** A failed workflow run: the agent reads the failing logs, reproduces and fixes it. A run GitHub
  * couldn't start (`not_started`, a startup failure) has no logs: its workflow file is at fault. */
-export function runPrompt(run: { id: number; workflow: string; branch: string; state?: string }): string {
+export function runPrompt(run: { id: number; workflow: string; branch: string; state?: string; attempt?: number }): string {
   if (run.state === 'not_started') return `The "${run.workflow}" workflow run ${run.id} on ${run.branch} didn't start: GitHub reported a startup failure, so no job ran and there are no logs. The workflow file is likely invalid: a YAML or schema error, an action or reusable workflow that doesn't exist, or a \`runs-on\` label no runner has. Find the file under .github/workflows (\`gh run view ${run.id}\` names it), validate it (use \`actionlint\` if it's installed), fix it and explain what was wrong. Don't push unless I ask.`;
-  return `The "${run.workflow}" workflow run ${run.id} on ${run.branch} failed. See what failed with \`gh run view ${run.id} --log-failed\`, check out ${run.branch}, reproduce the failure locally, fix it and run the tests. Summarize what was wrong and what you changed; don't push unless I ask.`;
+  const attempts = (run.attempt ?? 1) > 1 ? ` This was attempt ${run.attempt}; compare it with earlier attempts (\`gh run view ${run.id} --attempt N\`) to tell a flaky failure from a real one.` : '';
+  return `The "${run.workflow}" workflow run ${run.id} on ${run.branch} failed. See what failed with \`gh run view ${run.id} --log-failed\`, check out ${run.branch}, reproduce the failure locally, fix it and run the tests.${attempts} Summarize what was wrong and what you changed; don't push unless I ask.`;
 }
+/** Workflow files GitHub can't load never run, so nothing reports them: the agent checks them in the checkout. */
+export const WORKFLOW_CHECK_TITLE = 'Check workflow files';
+export const workflowCheckPrompt = (repo: string) => `Check the GitHub Actions workflow files of ${repo} in this checkout (.github/workflows/*.yml and *.yaml) for anything that stops GitHub from starting a run: YAML syntax errors, schema errors (use \`actionlint\` if it's installed), \`runs-on\` labels no GitHub-hosted or self-hosted runner has, and \`uses:\` references to actions or reusable workflows that don't exist (check \`owner/repo@ref\` with \`gh api repos/OWNER/REPO\` and that the ref exists; local \`./\` paths must exist). List each file with what's wrong, and for each valid workflow its jobs and their steps. Don't change anything unless I ask.`;
 export const runTitle = (run: { workflow: string; branch: string; state?: string }) => (run.state === 'not_started' ? `Fix ${run.workflow} workflow file` : `Fix ${run.workflow} on ${run.branch}`).slice(0, 120);
 
 /** Thread titles say what the thread is for, short enough for the sidebar. */

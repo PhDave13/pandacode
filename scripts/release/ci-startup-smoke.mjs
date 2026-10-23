@@ -10,7 +10,7 @@ export function assertHostedRunner(env, target, platform = process.platform) {
   if (env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || !env.RUNNER_TEMP || !isAbsolute(env.RUNNER_TEMP)) {
     throw new Error('Startup smoke is restricted to disposable GitHub-hosted runners.');
   }
-  if (!['windows-x86_64', 'linux-x86_64', 'linux-aarch64'].includes(target) || targetConfig(target).platform !== platform) {
+  if (!['windows-x86_64', 'windows-aarch64', 'linux-x86_64', 'linux-aarch64'].includes(target) || targetConfig(target).platform !== platform) {
     throw new Error('Startup smoke requires the matching Windows or Linux host.');
   }
 }

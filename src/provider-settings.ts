@@ -3,6 +3,8 @@ import { call, preview } from './bridge';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
+import type { ConnectionSnapshot } from './connections';
+import type { ProviderId } from './types';
 
 type ClaudeMode = 'inherit' | 'subscription';
 interface ClaudeStatus { mode: ClaudeMode; source: string; environmentVariables: string[]; endpoint: string | null; savedLogin: 'signedIn' | 'notSignedIn' | 'otherCredentials' | 'unknown'; conflict: boolean; }
@@ -39,12 +41,12 @@ function keyForm(provider: KeyedProvider, label: string): string {
       <div class="connection-key-status"><span id="${provider}-key-status" role="status">Checking connection…</span><button type="button" class="secondary-button" id="remove-${provider}-key" data-remove-key="${provider}" hidden>Remove saved key</button></div>`;
 }
 
-export function mountProviderSettings(host: HTMLElement, saved: () => Promise<unknown>): () => void {
-  let disposed = false, pending = false;
+export function mountProviderSettings(host: HTMLElement, saved: () => Promise<unknown>, named?: { harnesses: { id: ProviderId; name: string }[]; saved: (snapshot: ConnectionSnapshot) => void }): () => void {
+  let disposed = false, pending = false, unmountNamed: (() => void) | undefined;
   let configurationRevision = 0;
   const editedPaths = new Set<HTMLInputElement>();
   host.classList.add('provider-connections');
-  host.innerHTML = `<p class="dialog-description">Use your existing agent accounts. Each connection keeps its own configuration.</p>
+  host.innerHTML = `<p class="dialog-description">Use your existing agent accounts. Each connection keeps its own configuration.</p>${named ? '<section id="named-connections"></section>' : ''}
     <section class="connection-card" id="claude-connection"><h3>${providerLogo('claude')}Claude Code</h3>
       <div class="connection-auth-label"><label for="claude-connection-mode">Claude connection</label>${infoMark(claudeHelp, 'Claude connection details')}<span class="sr-only" id="claude-connection-help">${escape(claudeHelp)}</span></div>
       <div class="connection-select"><select id="claude-connection-mode" aria-describedby="claude-connection-help"><option value="inherit">Use current environment</option><option value="subscription">Prefer saved Claude login</option></select></div>
@@ -75,6 +77,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     <section class="connection-card"><h3>${providerLogo('commandcode')}Command Code<small>via ACP</small></h3><p>Install with <code>npm i -g command-code</code>, then sign in once with <code>command-code login</code>. A key is optional: either one authenticates the same account.</p>
       ${keyForm('commandcode', 'Command Code API key')}
       <a href="https://commandcode.ai/docs/acp" target="_blank" rel="noopener noreferrer">Command Code docs ${icon('forward')}</a>${pathForm('commandcode', 'Command Code executable', '/path/to/command-code')}</section>
+    <section class="connection-card"><h3>${providerLogo('github-copilot')}GitHub Copilot CLI<small>GitHub Copilot, via ACP</small></h3><p>Install with <code>npm install -g @github/copilot</code>, then run <code>copilot login</code> in a terminal. PandaCode uses the CLI sign-in; GitHub credentials stay with Copilot CLI.</p><div class="connection-model-actions"><a href="https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli" target="_blank" rel="noopener noreferrer">Install and sign in ${icon('forward')}</a><a href="https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server" target="_blank" rel="noopener noreferrer">ACP support details ${icon('forward')}</a></div>${pathForm('github-copilot', 'GitHub Copilot CLI executable', '/path/to/copilot')}</section>
     <p class="connection-feedback" role="status" hidden></p>${preview ? '<p class="settings-preview-note">Browser preview · keys are never saved here.</p>' : ''}`;
   const feedback = host.querySelector<HTMLElement>('.connection-feedback')!;
   const keyInput = (provider: KeyedProvider) => host.querySelector<HTMLInputElement>(`#${provider}-key`)!;
@@ -211,7 +214,8 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   host.addEventListener('submit', submit); host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('change', change);
   void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(String(error), true); });
   void checkClaude();
-  return () => { disposed = true; for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };
+  if (named) void import('./connections').then(({ mountConnections }) => { if (!disposed) unmountNamed = mountConnections(host.querySelector<HTMLElement>('#named-connections')!, named.harnesses, named.saved); });
+  return () => { disposed = true; unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };
 }
 
 function pathForm(provider: string, label: string, placeholder: string): string {

@@ -4,7 +4,8 @@ use super::ModelInfo;
 use tokio::process::Command;
 
 pub(super) const ENDPOINT: &str = "https://api.z.ai/api/anthropic";
-pub(super) const DEFAULT_MODEL: &str = "glm-4.7";
+pub(super) const DEFAULT_MODEL: &str = "glm-5.3";
+const HAIKU_MODEL: &str = "glm-5.3-flash";
 
 fn resolve_key(
     saved: Result<Option<String>, String>,
@@ -41,7 +42,7 @@ pub(super) fn environment() -> Result<Vec<(String, String)>, String> {
             DEFAULT_MODEL.into(),
         ),
         ("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), DEFAULT_MODEL.into()),
-        ("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), "glm-4.5-air".into()),
+        ("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), HAIKU_MODEL.into()),
     ])
 }
 pub(super) fn configure(command: &mut Command) -> Result<String, String> {
@@ -65,7 +66,7 @@ pub(super) fn arguments() -> Vec<String> {
         "ANTHROPIC_API_KEY":"", "CLAUDE_CODE_OAUTH_TOKEN":"",
         "CLAUDE_CODE_USE_BEDROCK":"", "CLAUDE_CODE_USE_VERTEX":"", "CLAUDE_CODE_USE_FOUNDRY":"",
         "ANTHROPIC_DEFAULT_SONNET_MODEL":DEFAULT_MODEL,"ANTHROPIC_DEFAULT_OPUS_MODEL":DEFAULT_MODEL,
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL":"glm-4.5-air", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"1"
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL":HAIKU_MODEL, "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"1"
     }}).to_string()]
 }
 
@@ -84,24 +85,29 @@ fn apply_environment(command: &mut Command, key: &str) {
         .env("ANTHROPIC_MODEL", DEFAULT_MODEL)
         .env("ANTHROPIC_DEFAULT_SONNET_MODEL", DEFAULT_MODEL)
         .env("ANTHROPIC_DEFAULT_OPUS_MODEL", DEFAULT_MODEL)
-        .env("ANTHROPIC_DEFAULT_HAIKU_MODEL", "glm-4.5-air");
+        .env("ANTHROPIC_DEFAULT_HAIKU_MODEL", HAIKU_MODEL);
 }
 
 pub(super) fn models() -> Vec<ModelInfo> {
     // Documented Coding Plan IDs, not Claude aliases or inferred versions.
     // Z.AI does not expose plan entitlements through Claude's model catalog.
-    // Keep custom IDs available in the picker as the service evolves.
+    // Legacy IDs are auto-routed server-side (glm-5.2 and glm-5.1 to GLM-5.3,
+    // glm-4.7 to GLM-5.3-Flash), so those are not listed; glm-5-turbo remains
+    // on the advertised Coding Plan lineup. `[1m]` is Claude Code's suffix for
+    // the 1M-token context mode on models that support it. Keep custom IDs
+    // available in the picker as the service evolves.
     [
-        ("glm-4.7", "GLM-4.7"),
-        ("glm-5.1", "GLM-5.1"),
-        ("glm-5-turbo", "GLM-5-Turbo"),
-        ("glm-4.5-air", "GLM-4.5-Air"),
+        ("glm-5.3", "GLM-5.3", "Current flagship."),
+        ("glm-5.3-flash", "GLM-5.3-Flash", "Fast, low-cost tier."),
+        ("glm-5.3[1m]", "GLM-5.3 · 1M context", "Flagship with the extended 1M-token context window."),
+        ("glm-5.3-flash[1m]", "GLM-5.3-Flash · 1M context", "Fast tier with the extended 1M-token context window."),
+        ("glm-5-turbo", "GLM-5-Turbo", "Fast general-purpose model."),
     ]
     .into_iter()
-    .map(|(id, name)| ModelInfo {
+    .map(|(id, name, description)| ModelInfo {
         id: id.into(),
         name: name.into(),
-        description: "Z.AI Coding Plan via Claude Code. Availability depends on your plan.".into(),
+        description: format!("{description} Availability depends on your plan."),
         reasoning_efforts: Vec::new(),
         default_reasoning_effort: None,
         context_window: None,
@@ -159,5 +165,8 @@ mod tests {
         assert!(models()
             .iter()
             .all(|model| model.id.starts_with("glm-") && model.name.starts_with("GLM-")));
+        assert_eq!(models()[0].id, DEFAULT_MODEL);
+        assert!(models().iter().any(|model| model.id == "glm-5.3[1m]"));
+        assert!(models().iter().any(|model| model.id == "glm-5.3-flash[1m]"));
     }
 }

@@ -16,6 +16,10 @@ use crate::workspace::{checked, run_process};
 
 const LIST_LIMIT: &str = "50";
 const CLONE_TIMEOUT: Duration = Duration::from_secs(600);
+/// How much of a job's check-run summary the view shows.
+const SUMMARY_LIMIT: usize = 8 * 1024;
+/// How many earlier attempts of a re-run are read.
+const ATTEMPTS_LIMIT: i64 = 5;
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -79,21 +83,45 @@ pub struct HubRun {
     /// Pull requests in this repository the run's head belongs to (empty for forks).
     pub pulls: Vec<i64>,
 }
-/// A run's jobs and uploaded artifacts, read when its row is expanded.
+/// A run's jobs and uploaded artifacts, read when its row is expanded, and its earlier
+/// attempts (newest first) when it was re-run.
 #[derive(Debug, Serialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RunDetails {
     pub jobs: Vec<RunJob>,
     pub artifacts: Vec<RunArtifact>,
+    pub attempts: Vec<RunAttempt>,
 }
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RunJob {
+    pub id: i64,
     pub name: String,
     pub state: String,
     pub started_at: String,
     pub completed_at: String,
     pub url: String,
+    pub steps: Vec<RunStep>,
+    /// The job's check-run summary and text (Markdown), at most `SUMMARY_LIMIT` bytes.
+    pub summary: String,
+}
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStep {
+    pub name: String,
+    pub state: String,
+    pub started_at: String,
+    pub completed_at: String,
+}
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAttempt {
+    pub attempt: i64,
+    pub state: String,
+    pub started_at: String,
+    pub updated_at: String,
+    pub url: String,
+    pub jobs: Vec<RunJob>,
 }
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -277,23 +305,74 @@ pub fn runs(repo: &str) -> Result<Vec<HubRun>, String> {
     Ok(runs_of(&json(&capture)?))
 }
 
-/// Jobs (latest attempt) and artifacts from the REST `jobs` and `artifacts` responses.
-pub fn details_of(jobs: &serde_json::Value, artifacts: &serde_json::Value) -> RunDetails {
-    RunDetails {
-        jobs: list(jobs, "jobs")
+/// At most `limit` bytes of `value`, cut on a character boundary and marked when cut.
+fn bounded(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n\n…", &value[..end])
+}
+
+/// Check-run summaries by id from the REST `check-runs` response: `output.summary` and `output.text`.
+pub fn summaries_of(value: &serde_json::Value) -> std::collections::HashMap<i64, String> {
+    list(value, "check_runs")
+        .iter()
+        .filter_map(|check| {
+            let output = check.get("output")?;
+            let parts: Vec<String> = [text(output, "summary"), text(output, "text")].into_iter().filter(|part| !part.trim().is_empty()).collect();
+            (!parts.is_empty()).then(|| (number(check, "id"), bounded(&parts.join("\n\n"), SUMMARY_LIMIT)))
+        })
+        .collect()
+}
+
+fn job_of(job: &serde_json::Value, summaries: &std::collections::HashMap<i64, String>) -> RunJob {
+    let id = number(job, "id");
+    RunJob {
+        id,
+        name: text(job, "name"),
+        state: run_state(&text(job, "status"), &text(job, "conclusion")),
+        started_at: text(job, "started_at"),
+        completed_at: text(job, "completed_at"),
+        url: text(job, "html_url"),
+        steps: list(job, "steps")
             .iter()
-            .map(|job| RunJob {
-                name: text(job, "name"),
-                state: run_state(&text(job, "status"), &text(job, "conclusion")),
-                started_at: text(job, "started_at"),
-                completed_at: text(job, "completed_at"),
-                url: text(job, "html_url"),
-            })
+            .map(|step| RunStep { name: text(step, "name"), state: run_state(&text(step, "status"), &text(step, "conclusion")), started_at: text(step, "started_at"), completed_at: text(step, "completed_at") })
             .collect(),
+        summary: summaries.get(&id).cloned().unwrap_or_default(),
+    }
+}
+
+/// Jobs (latest attempt) and artifacts from the REST `jobs` and `artifacts` responses.
+#[cfg(test)]
+pub fn details_of(jobs: &serde_json::Value, artifacts: &serde_json::Value) -> RunDetails {
+    details_with(jobs, artifacts, &Default::default())
+}
+fn details_with(jobs: &serde_json::Value, artifacts: &serde_json::Value, summaries: &std::collections::HashMap<i64, String>) -> RunDetails {
+    RunDetails {
+        jobs: list(jobs, "jobs").iter().map(|job| job_of(job, summaries)).collect(),
         artifacts: list(artifacts, "artifacts")
             .iter()
             .map(|artifact| RunArtifact { name: text(artifact, "name"), size: number(artifact, "size_in_bytes"), expired: artifact.get("expired").and_then(|v| v.as_bool()).unwrap_or(false) })
             .collect(),
+        attempts: Vec::new(),
+    }
+}
+
+/// An earlier attempt from the REST `runs/{id}/attempts/{n}` response, with its jobs picked
+/// from a `filter=all` jobs response.
+pub fn attempt_of(run: &serde_json::Value, attempt: i64, all_jobs: &serde_json::Value, summaries: &std::collections::HashMap<i64, String>) -> RunAttempt {
+    let url = text(run, "html_url");
+    RunAttempt {
+        attempt,
+        state: run_state(&text(run, "status"), &text(run, "conclusion")),
+        started_at: text(run, "run_started_at"),
+        updated_at: text(run, "updated_at"),
+        url: if url.is_empty() || url.contains("/attempts/") { url } else { format!("{url}/attempts/{attempt}") },
+        jobs: list(all_jobs, "jobs").iter().filter(|job| number(job, "run_attempt") == attempt).map(|job| job_of(job, summaries)).collect(),
     }
 }
 
@@ -303,9 +382,22 @@ pub fn run_details(repo: &str, id: i64) -> Result<RunDetails, String> {
         return Err("Choose a workflow run.".into());
     }
     let root = account_root();
-    let jobs = json(&run_gh(&root, &["api", &format!("repos/{repo}/actions/runs/{id}/jobs?per_page=100")], TIMEOUT)?)?;
-    let artifacts = json(&run_gh(&root, &["api", &format!("repos/{repo}/actions/runs/{id}/artifacts?per_page=100")], TIMEOUT)?)?;
-    Ok(details_of(&jobs, &artifacts))
+    let api = |path: String| run_gh(&root, &["api", &path], TIMEOUT).and_then(|capture| json(&capture));
+    let jobs = api(format!("repos/{repo}/actions/runs/{id}/jobs?per_page=100"))?;
+    let artifacts = api(format!("repos/{repo}/actions/runs/{id}/artifacts?per_page=100"))?;
+    // Summaries are extra: one check-runs read for the commit, skipped if it fails.
+    let sha = list(&jobs, "jobs").first().map(|job| text(job, "head_sha")).filter(|sha| !sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit()));
+    let summaries = sha.and_then(|sha| api(format!("repos/{repo}/commits/{sha}/check-runs?filter=all&per_page=100")).ok()).map(|value| summaries_of(&value)).unwrap_or_default();
+    let mut details = details_with(&jobs, &artifacts, &summaries);
+    let latest = list(&jobs, "jobs").iter().map(|job| number(job, "run_attempt")).max().unwrap_or(1);
+    if latest > 1 {
+        let all_jobs = api(format!("repos/{repo}/actions/runs/{id}/jobs?filter=all&per_page=100")).unwrap_or_default();
+        details.attempts = (1.max(latest - ATTEMPTS_LIMIT)..latest)
+            .rev()
+            .filter_map(|attempt| api(format!("repos/{repo}/actions/runs/{id}/attempts/{attempt}")).ok().map(|run| attempt_of(&run, attempt, &all_jobs, &summaries)))
+            .collect();
+    }
+    Ok(details)
 }
 
 /// The GitHub repository behind a local project, from its `origin` remote.
@@ -426,8 +518,34 @@ mod tests {
         assert_eq!(details.artifacts[0], RunArtifact { name: "coverage".into(), size: 2048, expired: false });
         assert!(details.artifacts[1].expired);
         assert_eq!(details_of(&json!({}), &json!({})), RunDetails::default());
+        assert!(details.jobs[1].steps.is_empty() && details.jobs[1].summary.is_empty());
         assert!(run_details("orbit-labs/orbit", 0).is_err());
         assert!(run_details("--x", 1).is_err());
+    }
+
+    #[test]
+    fn jobs_carry_steps_summaries_and_earlier_attempts() {
+        let jobs = json!({ "jobs": [
+            { "id": 7, "run_attempt": 1, "name": "test", "status": "completed", "conclusion": "failure", "steps": [
+                { "name": "Checkout", "status": "completed", "conclusion": "success", "started_at": "a", "completed_at": "b" },
+                { "name": "Run tests", "status": "completed", "conclusion": "failure" },
+                { "name": "Upload", "status": "completed", "conclusion": "skipped" } ] },
+            { "id": 9, "run_attempt": 2, "name": "test", "status": "completed", "conclusion": "success" } ] });
+        let checks = json!({ "check_runs": [
+            { "id": 7, "output": { "summary": "**2 failed**", "text": "details" } },
+            { "id": 9, "output": { "summary": null, "text": "" } },
+            { "id": 11, "output": { "summary": "x".repeat(SUMMARY_LIMIT + 10) } } ] });
+        let summaries = summaries_of(&checks);
+        assert_eq!(summaries.get(&7).map(String::as_str), Some("**2 failed**\n\ndetails"));
+        assert!(!summaries.contains_key(&9));
+        assert!(summaries[&11].len() <= SUMMARY_LIMIT + 8 && summaries[&11].ends_with('…'));
+        assert_eq!(bounded("héllo", 2), "h\n\n…");
+        let run = json!({ "status": "completed", "conclusion": "failure", "run_started_at": "s", "updated_at": "u", "html_url": "https://github.com/o/r/actions/runs/5" });
+        let attempt = attempt_of(&run, 1, &jobs, &summaries);
+        assert_eq!((attempt.attempt, attempt.state.as_str(), attempt.url.as_str()), (1, "failed", "https://github.com/o/r/actions/runs/5/attempts/1"));
+        assert_eq!(attempt.jobs.len(), 1);
+        assert_eq!(attempt.jobs[0].steps.iter().map(|step| step.state.as_str()).collect::<Vec<_>>(), ["passed", "failed", "passed"]);
+        assert_eq!(attempt.jobs[0].summary, "**2 failed**\n\ndetails");
     }
 
     #[test]

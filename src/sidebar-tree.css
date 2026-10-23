@@ -38,6 +38,17 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
 .folder-heading[aria-expanded=false]>.icon{opacity:.6}
 .folder-heading.empty{color:var(--muted)}
 
+/* Wrapper lets the heading button and the hover-reveal new-task icon sit side by side. */
+.folder-row{position:relative;display:flex;align-items:center;border-radius:3px}
+.folder-row:hover{background:var(--raised)}
+.folder-row>.folder-heading{flex:1;min-width:0;padding-right:28px}
+.folder-row>.folder-heading:hover{background:transparent}
+.folder-new-task{position:absolute;z-index:1;right:3px;display:grid;place-items:center;width:24px;height:24px;border-radius:4px;color:var(--muted);opacity:0}
+.folder-new-task .icon{width:14px;height:14px}
+.folder-row:hover>.folder-new-task,.folder-row:focus-within>.folder-new-task{opacity:1}
+.folder-new-task:hover{color:var(--text);background:color-mix(in srgb,var(--text) 8%,transparent)}
+@media(hover:none){.folder-new-task{opacity:1}}
+
 /* Tasks hang off a thin guide under their folder. */
 .sidebar .folder-tasks{margin:1px 0 4px var(--tree-indent);padding-left:6px;border-left:1px solid var(--tree-guide);gap:1px}
 .sidebar .task-list{gap:1px}

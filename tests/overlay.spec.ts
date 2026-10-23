@@ -359,7 +359,7 @@ test('launcher model picker fits the minimum window and Escape only closes the p
   expect(rect!.x + rect!.width).toBeLessThanOrEqual(490);
   expect(rect!.y + rect!.height).toBeLessThanOrEqual(410);
   await page.getByRole('searchbox',{name:'Search harnesses and models'}).fill('GLM Coding Plan');
-  const glm = page.locator('.model-menu-option[data-provider="glm"][data-model="glm-4.7"]');
+  const glm = page.locator('.model-menu-option[data-provider="glm"][data-model="glm-5.3"]');
   await expect(glm).toBeInViewport();
   await expect(glm.locator('.provider-logo')).toHaveCount(1);
   await expect(picker).toHaveAttribute('data-popover-state','open');
@@ -509,17 +509,17 @@ test('launcher keeps live narratives between compact tool groups and preserves l
   await expect(narratives.nth(1)).toBeVisible();
   const groups = activity.locator('details.tool-group');
   await expect(groups).toHaveCount(2);
-  await expect(groups.nth(0).locator(':scope > summary')).toContainText('2 tools');
-  await expect(groups.nth(1).locator(':scope > summary')).toContainText('1 tool');
+  await expect(groups.nth(0).locator(':scope > summary')).toContainText('Reading 2 files');
+  await expect(groups.nth(1).locator(':scope > summary')).toContainText('Running 1 command');
   await expect(groups.nth(0)).toHaveJSProperty('open',false);
   await expect(groups.nth(1)).toHaveJSProperty('open',false);
   const sequence = () => activity.locator('[data-commentary], details.tool-group').evaluateAll(elements => elements.map(element => element.matches('.tool-group') ? element.querySelector('.tool-group-label')!.textContent : element.textContent));
   const originalSequence = await sequence();
   expect(originalSequence).toEqual([
     expect.stringContaining('I will inspect the current launcher.'),
-    expect.stringContaining('2 tools'),
+    expect.stringContaining('Reading 2 files'),
     expect.stringContaining('The client is ready; I will verify the behavior.'),
-    expect.stringContaining('1 tool'),
+    expect.stringContaining('Running 1 command'),
   ]);
   await groups.nth(0).locator(':scope > summary').click();
   const firstTool = groups.nth(0).locator('[data-tool-key="tool:read-launcher"]');
@@ -537,7 +537,7 @@ test('launcher keeps live narratives between compact tool groups and preserves l
   await expect(groups.nth(0)).toHaveJSProperty('open',true);
   await expect(groups.nth(1)).toHaveJSProperty('open',false);
   await expect(firstTool.locator('[data-tool-section="output"]')).toContainText('The launcher inspection is complete.');
-  expect(await sequence()).toEqual(originalSequence);
+  expect(await sequence()).toEqual([originalSequence[0], 'Read 2 files', originalSequence[2], originalSequence[3]]);
   await page.screenshot({path:'/private/tmp/pandacode-overlay-chronological-tools.png'});
   await page.evaluate(() => {
     const fixture = (window as any).__chronologicalThread;

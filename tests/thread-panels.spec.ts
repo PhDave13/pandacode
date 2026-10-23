@@ -66,14 +66,13 @@ test.describe('thread panels', () => {
 
   test('keeps folder, selected file, tab, and closed state separate for same-project tasks', async ({ page }) => {
     await open(page);
-    await page.locator('#inspector-toggle').click();
+    await expect(inspector(page)).toBeVisible();
     await page.getByRole('button', { name: 'Files', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'src', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'main.ts', exact: true }).click();
     await expect(page.locator('.file-preview-title')).toHaveText('src/main.ts');
     await select(page, 'session-2');
-    await expect(inspector(page)).toBeHidden();
-    await page.locator('#inspector-toggle').click();
+    await expect(inspector(page)).toBeVisible();
     await page.getByRole('button', { name: 'Files', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'package.json', exact: true }).click();
     await expect(page.locator('.file-preview-title')).toHaveText('package.json');
@@ -90,7 +89,7 @@ test.describe('thread panels', () => {
     await expect(page.locator('.file-preview-title')).toHaveText('package.json');
   });
 
-  test('new tasks start closed and returning restores the prior task browser including in-page navigation', async ({ page }) => {
+  test('new tasks open on Files and returning restores the prior task browser including in-page navigation', async ({ page }) => {
     await open(page); await navigate(page, 'http://localhost:3000/first');
     await page.evaluate(() => (window as any).__panelEmit('browser-state', {url:'http://localhost:3000/next',title:'Next page',loading:false,canGoBack:true,canGoForward:false,picking:false}));
     await expect(address(page)).toHaveValue('http://localhost:3000/next');
@@ -99,7 +98,8 @@ test.describe('thread panels', () => {
     await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', 'session-1');
     const newId = await page.locator('#prompt').getAttribute('data-session-id');
     expect(newId).not.toBe('session-1');
-    await expect(inspector(page)).toBeHidden();
+    await expect(inspector(page)).toBeVisible();
+    await expect(page.locator('.inspector-tabs [data-action="tab-files"]')).toHaveClass(/selected/);
     await navigate(page, 'http://localhost:5173/second');
     // Typed text keeps the unsent draft; New task reopens it since it has no sidebar row yet.
     await page.locator('#prompt').fill('Keep this draft');
@@ -151,11 +151,9 @@ test.describe('thread panels', () => {
 
   test('late selected-file restoration cannot replace another task selection', async ({ page }) => {
     await open(page);
-    await page.locator('#inspector-toggle').click();
     await page.getByRole('button', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'README.md',exact:true }).click();
     await select(page, 'session-2');
-    await page.locator('#inspector-toggle').click();
     await page.getByRole('button', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'package.json',exact:true }).click();
     await page.evaluate(() => { (window as any).__holdPanelFile = 'session-1'; });
@@ -197,7 +195,6 @@ test.describe('thread panels', () => {
 
   test('hiding and reselecting a task does not strand a restored file in its loading state', async ({ page }) => {
     await open(page);
-    await page.locator('#inspector-toggle').click();
     await page.getByRole('button', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'README.md',exact:true }).click();
     await select(page, 'session-2');
@@ -214,7 +211,6 @@ test.describe('thread panels', () => {
 
   test('a project change completed in the background discards the old workspace file context', async ({ page }) => {
     await open(page); await select(page, 'session-2');
-    await page.locator('#inspector-toggle').click();
     await page.getByRole('button', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'src',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'main.ts',exact:true }).click();

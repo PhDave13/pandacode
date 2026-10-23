@@ -40,7 +40,7 @@ async function pasteImage(page: Page, name = 'shot.png'): Promise<void> {
 test('the attach menu offers files, a folder, project files and a sketch, and attaches picker results as chips', async ({ page }) => {
   await probe(page);
   await attachButton(page).click();
-  await expect(attachMenu(page).getByRole('menuitem')).toHaveText([/Attach files…/, /Attach a folder…/, /Project files/, /Sketch a mockup…/]);
+  await expect(attachMenu(page).getByRole('menuitem')).toHaveText([/Attach files…/, /Attach a folder…/, /Project files/, /Sketch a mockup…/, /Workflow recipes…/]);
   await attachMenu(page).getByRole('menuitem', { name: /Attach files…/ }).click();
   await expect(chips(page)).toHaveCount(2);
   await expect(chips(page).nth(0)).toHaveClass(/prompt-chip-image/);
@@ -72,6 +72,7 @@ test('the attach menu offers files, a folder, project files and a sketch, and at
 test('project files stays reachable from the menu and opens the Files tab', async ({ page }) => {
   await probe(page);
   const filesTab = page.locator('.inspector-tabs [data-action="tab-files"]');
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(filesTab).not.toHaveClass(/selected/);
   await attachButton(page).click();
   await attachMenu(page).getByRole('menuitem', { name: 'Project files', exact: true }).click();

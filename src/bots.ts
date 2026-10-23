@@ -4,7 +4,8 @@ import { escape, icon } from './dom';
 import { trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
-import type { Provider, ProviderId } from './types';
+import type { Provider, ProviderId, ProviderModel } from './types';
+import { modelChoices } from './model-catalog';
 import { connectInput, guideToggled } from './bots-connect';
 import { renderPanel, panelClick, panelSubmit, panelChange, invalidateActivity, type PanelContext, type Tab } from './bots-panels';
 
@@ -32,6 +33,7 @@ export interface BotsOptions {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   providers: Provider[];
   defaultModel(provider: ProviderId): string;
+  loadModels(provider: ProviderId): Promise<ProviderModel[]>;
   /** True while a task's agent is working. */
   running(sessionId: string): boolean;
   openTask(sessionId: string): void;
@@ -56,6 +58,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: 'schedules', label: 'Schedules' }, { id: 'channels', label: 'Channels' }, { id: 'rules', label: 'Rules' }, { id: 'activity', label: 'Activity' },
 ];
 const MODES = [{ id: 'ask', label: 'Ask before acting' }, { id: 'auto', label: 'Auto-approve edits' }, { id: 'plan', label: 'Plan only' }, { id: 'full', label: 'Full access' }];
+const providerModes = (provider: ProviderId) => provider === 'github-copilot' ? MODES.filter(mode => mode.id !== 'auto') : MODES;
 const CHECK_INS = [{ minutes: 0, label: 'Off' }, { minutes: 30, label: 'Every 30 minutes' }, { minutes: 60, label: 'Every hour' }, { minutes: 180, label: 'Every 3 hours' }, { minutes: 360, label: 'Every 6 hours' }, { minutes: 1440, label: 'Once a day' }];
 
 /** Starting points, in the spirit of the named bots this feature follows. */
@@ -91,6 +94,10 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   let template = TEMPLATES[0];
   let confirming: { title: string; text: string; button: string; action: () => Promise<void> } | null = null;
   let loading = true, busy = false, disposed = false, request = 0, moreOpen = false;
+  let formModelGeneration = 0;
+  const modelCatalogs = new Map<ProviderId, ProviderModel[]>();
+  const modelCatalogRequests = new Map<ProviderId, Promise<ProviderModel[]>>();
+  for (const provider of options.providers) if (provider.models.length) modelCatalogs.set(provider.id, provider.models);
   let error = '';
   const single = options.layout === 'settings';
   const installed = () => options.providers.filter(provider => provider.installed);
@@ -133,6 +140,51 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   function message(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause); }
   function working(bot: Bot): boolean { return bot.id === detail?.bot.id && detail.threads.some(thread => options.running(thread.sessionId)); }
 
+  function botModelChoices(provider: ProviderId, catalog: ProviderModel[], selected: string): ProviderModel[] {
+    const choices = modelChoices(provider, catalog, selected);
+    return provider === 'github-copilot'
+      ? choices.filter(model => model.id === 'default' || catalog.some(advertised => advertised.id === model.id))
+      : choices;
+  }
+  function modelOptions(provider: ProviderId, catalog: ProviderModel[], selected: string): string {
+    const choices = botModelChoices(provider, catalog, selected);
+    const chosen = choices.some(model => model.id === selected) ? selected : 'default';
+    return choices.map(model => `<option value="${escape(model.id)}" ${model.id === chosen ? 'selected' : ''}>${escape(model.name)}</option>`).join('');
+  }
+  function loadFormModels(providerId: ProviderId, select: HTMLSelectElement, preferred: string): void {
+    const generation = ++formModelGeneration;
+    const provider = options.providers.find(item => item.id === providerId);
+    if (!provider) return;
+    const apply = (catalog: ProviderModel[]) => {
+      if (disposed || generation !== formModelGeneration || !select.isConnected
+        || pane.querySelector<HTMLSelectElement>('.bots-form select[name=provider]')?.value !== providerId) return;
+      const desired = providerId === 'github-copilot' && preferred !== 'default'
+        && !catalog.some(model => model.id === preferred) ? 'default' : preferred;
+      select.innerHTML = modelOptions(providerId, catalog, desired);
+      select.value = botModelChoices(providerId, catalog, desired).some(model => model.id === desired) ? desired : 'default';
+    };
+    apply(modelCatalogs.get(providerId) ?? provider.models);
+    if (modelCatalogs.has(providerId)) return;
+    let pending = modelCatalogRequests.get(providerId);
+    if (!pending) {
+      pending = options.loadModels(providerId).then(catalog => {
+        const models = Array.isArray(catalog) ? catalog : [];
+        provider.models = models;
+        modelCatalogs.set(providerId, models);
+        return models;
+      }).finally(() => modelCatalogRequests.delete(providerId));
+      modelCatalogRequests.set(providerId, pending);
+    }
+    void pending.then(apply).catch(() => undefined);
+  }
+  function hydrateFormModels(): void {
+    const form = pane.querySelector<HTMLFormElement>('.bots-form');
+    if (!form) return;
+    const provider = form.querySelector<HTMLSelectElement>('select[name=provider]')!;
+    const model = form.querySelector<HTMLSelectElement>('select[name=model]')!;
+    void loadFormModels(provider.value as ProviderId, model, model.dataset.preferredModel || model.value);
+  }
+
   function renderList(): void {
     if (!list) return;
     const rows = bots.map(bot => `<button type="button" class="bots-row" data-bot="${escape(bot.id)}" aria-current="${bot.id === selected && editing !== 'new'}">${avatar(bot)}<span class="bots-row-text"><b>${escape(bot.name)}</b><small>${escape(bot.paused ? 'Paused' : working(bot) ? 'Working…' : bot.role || 'Ready')}</small></span>${bot.paused ? `<span class="bots-dot paused" title="Paused"></span>` : working(bot) ? '<span class="bots-dot working" title="Working"></span>' : ''}</button>`).join('');
@@ -141,10 +193,13 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
 
   function renderForm(bot: Bot | null): string {
     const source = bot ?? { ...template, provider: (installed()[0]?.id ?? 'claude') as ProviderId, model: '', mode: 'ask' };
-    const providers = installed().length ? installed() : options.providers;
-    const provider = providers.find(item => item.id === source.provider) ?? providers[0];
+    const providers = options.providers;
+    const hasInstalledProvider = providers.some(item => item.installed);
+    const provider = providers.find(item => item.id === source.provider) ?? providers.find(item => item.installed) ?? providers[0];
     const model = source.model || (provider ? options.defaultModel(provider.id) : '');
-    const models = provider?.models ?? [];
+    const models = provider ? modelCatalogs.get(provider.id) ?? provider.models : [];
+    const visibleModes = provider ? providerModes(provider.id) : MODES;
+    const mode = visibleModes.some(item => item.id === source.mode) ? source.mode : 'ask';
     const templates = bot ? '' : `<div class="bots-templates" role="group" aria-label="Start from">${TEMPLATES.map(item => `<button type="button" data-template="${item.id}" aria-pressed="${item.id === template.id}"><span aria-hidden="true">${item.avatar}</span>${escape(item.name || 'Blank')}</button>`).join('')}</div>`;
     return `<form class="bots-form" novalidate>
       ${bot ? '' : '<h3>New bot</h3><p class="bots-lede">A bot is an agent that lives on this computer. It remembers, works on a schedule, and answers you here, in a browser, or in Telegram, Slack, Discord and WhatsApp.</p>'}
@@ -154,9 +209,9 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       <label class="bots-field"><span>Job</span><input name="role" maxlength="200" value="${escape(source.role)}" placeholder="What it's for, in a few words" autocomplete="off"></label>
       <label class="bots-field"><span>Instructions</span><textarea name="instructions" rows="4" maxlength="16000" placeholder="How it should work, what to always or never do">${escape(source.instructions)}</textarea></label>
       <label class="bots-field"><span>Standing goals</span><textarea name="goals" rows="3" maxlength="16000" placeholder="One per line. Check-ins work toward these.">${escape(source.goals)}</textarea></label>
-      <div class="bots-grid three"><label class="bots-field"><span>Harness</span><select name="provider">${providers.map(item => `<option value="${item.id}" ${item.id === provider?.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select></label>
-      <label class="bots-field"><span>Model</span><select name="model">${models.length ? models.map(item => `<option value="${escape(item.id)}" ${item.id === model ? 'selected' : ''}>${escape(item.name)}</option>`).join('') : `<option value="${escape(model)}">${escape(model || 'Default')}</option>`}</select></label>
-      <label class="bots-field"><span>Permissions</span><select name="mode">${MODES.map(item => `<option value="${item.id}" ${item.id === source.mode ? 'selected' : ''}>${item.label}</option>`).join('')}</select></label></div>
+      <div class="bots-grid three"><label class="bots-field"><span>Harness</span><select name="provider">${providers.map(item => `<option value="${item.id}" ${item.id === provider?.id ? 'selected' : ''} ${!item.installed && hasInstalledProvider ? 'disabled' : ''}>${escape(item.name)}${!item.installed ? ' · Not installed' : ''}</option>`).join('')}</select></label>
+      <label class="bots-field"><span>Model</span><select name="model" data-preferred-model="${escape(model)}">${provider ? modelOptions(provider.id, models, provider.id === 'github-copilot' && model !== 'default' && !models.some(item => item.id === model) ? 'default' : model) : `<option value="default">Default</option>`}</select></label>
+      <label class="bots-field"><span>Permissions</span><select name="mode">${visibleModes.map(item => `<option value="${item.id}" ${item.id === mode ? 'selected' : ''}>${item.label}</option>`).join('')}</select></label></div>
       <label class="bots-field"><span>Check-ins ${infoMark('On each check-in the bot reviews its goals and memory using read-only steps, and messages you only when something needs attention.', 'About check-ins')}</span><select name="heartbeatMinutes">${CHECK_INS.map(item => `<option value="${item.minutes}" ${item.minutes === source.heartbeatMinutes ? 'selected' : ''}>${item.label}</option>`).join('')}</select></label>
       <div class="dialog-footer">${!bot && bots.length ? '<button type="button" class="secondary-button" data-bots-action="cancel-edit">Cancel</button>' : ''}<button type="submit" class="primary-button">${bot ? 'Save' : 'Create bot'}</button></div>
     </form>`;
@@ -199,7 +254,11 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const confirm = confirming ? `<div class="bots-confirm" role="alertdialog" aria-label="${escape(confirming.title)}"><b>${escape(confirming.title)}</b><p>${escape(confirming.text)}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-bots-action="confirm-cancel">Cancel</button><button type="button" class="primary-button danger" data-bots-action="confirm-run">${escape(confirming.button)}</button></div></div>` : '';
     const alert = error ? `<p class="bots-error" role="alert">${escape(error)}</p>` : '';
     if (loading) { pane.innerHTML = '<p class="dialog-loading" role="status">Loading bots…</p>'; return; }
-    if (editing === 'new' || !detail) { pane.innerHTML = alert + (single && !detail ? '<p class="bots-empty-note">This bot no longer exists.</p>' : renderForm(null)); return; }
+    if (editing === 'new' || !detail) {
+      pane.innerHTML = alert + (single && !detail ? '<p class="bots-empty-note">This bot no longer exists.</p>' : renderForm(null));
+      hydrateFormModels();
+      return;
+    }
     // Keep a half-typed setting (a new memory, a schedule prompt) through background refreshes.
     const typing = pane.contains(document.activeElement) ? document.activeElement as HTMLInputElement | HTMLTextAreaElement : null;
     const kept = typing && 'value' in typing && typing.type !== 'checkbox' ? { name: typing.name || typing.getAttribute('aria-label') || '', value: typing.value } : null;
@@ -207,6 +266,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const body = section === 'profile' ? renderForm(detail.bot) : renderPanel(section, detail, context);
     const label = SECTIONS.find(item => item.id === section)!.label;
     pane.innerHTML = `${renderHeader(detail.bot)}${confirm}${alert}${tabs}<div class="bots-panel" role="tabpanel" aria-label="${escape(label)}">${body}</div>`;
+    hydrateFormModels();
     const group = pane.querySelector<HTMLElement>('.bots-tabs');
     if (group) trackSegment(group, group.querySelector<HTMLElement>('[aria-selected="true"]'));
     if (kept?.name) {
@@ -262,9 +322,17 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     if (target.matches('.bots-form select[name=provider]')) {
       const provider = options.providers.find(item => item.id === (target as HTMLSelectElement).value);
       const select = pane.querySelector<HTMLSelectElement>('.bots-form select[name=model]');
+      const mode = pane.querySelector<HTMLSelectElement>('.bots-form select[name=mode]');
       if (provider && select) {
-        const model = options.defaultModel(provider.id);
-        select.innerHTML = provider.models.length ? provider.models.map(item => `<option value="${escape(item.id)}" ${item.id === model ? 'selected' : ''}>${escape(item.name)}</option>`).join('') : `<option value="${escape(model)}">${escape(model || 'Default')}</option>`;
+        const preferred = options.defaultModel(provider.id) || 'default';
+        select.dataset.preferredModel = preferred;
+        void loadFormModels(provider.id, select, preferred);
+      }
+      if (provider && mode) {
+        const choices = providerModes(provider.id);
+        const current = mode.value;
+        const selected = choices.some(item => item.id === current) ? current : 'ask';
+        mode.innerHTML = choices.map(item => `<option value="${item.id}" ${item.id === selected ? 'selected' : ''}>${item.label}</option>`).join('');
       }
       return;
     }

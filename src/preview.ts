@@ -10,6 +10,10 @@ import { createPreviewTurnChanges } from './preview-turn-changes';
 // Bundled with the preview, not lazily imported: a late module load during a paused test clock stalled startup.
 import { invokeBots } from './preview-bots';
 import { invokeRemote } from './preview-remote';
+import { createPreviewDesign } from './preview-design';
+import { createPreviewSkills } from './preview-skills';
+import { previewCapabilities } from './preview-capabilities';
+import { recipesCommand } from './preview-recipes';
 import { openCodePreviewKey, openCodePreviewModels, previewOpenCodeChoices, previewOpenCodeSelection } from './preview-opencode';
 const turnChanges = createPreviewTurnChanges();
 const now = Date.now();
@@ -25,6 +29,7 @@ let sessions: Session[] = [
   { id: 'session-3', projectId: 'project-1', title: 'Add keyboard shortcuts', provider: 'kimi', model: '', mode: 'ask', status: 'idle', createdAt: now - 86400000, updatedAt: now - 86400000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
   { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
 ];
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pandacode.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -67,7 +72,32 @@ loadThreadOrder();
 sessions[2].issue = { kind: 'issue', number: 131, url: 'https://github.com/orbit-labs/orbit/issues/131', title: 'Keyboard shortcut cheat sheet', state: 'open', checkedAt: now };
 let id = 10;
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
-const messages: Record<string, Message[]> = { 'session-1': [
+const traceRoot = '/Users/you/Projects/orbit';
+const traceIndex = `${traceRoot}/src/lib/search-index.ts`;
+const traceJson = (value: unknown) => JSON.stringify(value, null, 2);
+const traceTools: Omit<ToolActivity, 'id'>[] = [
+  { name: 'Bash', status: 'completed', input: traceJson({ command: 'rg -n createSearchIndex src', description: 'Find index usage' }), output: 'src/components/search.ts:3:import { createSearchIndex } from "../lib/search-index";\nsrc/components/search.ts:11:const index = createSearchIndex(items);\nsrc/lib/search-index.ts:5:export function createSearchIndex(items: Item[]) {\nSample output — no command was executed.' },
+  { name: 'Read', status: 'completed', input: traceJson({ file_path: traceIndex }), output: 'import type { Item } from "./types";\n\nexport interface SearchIndex {\n  search(query: string): Item[];\n}\n\nexport function createSearchIndex(items: Item[]): SearchIndex {\n  return {\n    search(query) {\n      return items.filter(item =>\n        item.title.toLowerCase().includes(query.toLowerCase())\n      );\n    }\n  };\n}' },
+  { name: 'Grep', status: 'completed', input: traceJson({ pattern: 'toLowerCase', path: 'src' }), output: 'src/components/search.ts\nsrc/lib/search-index.ts\nsrc/lib/sort.ts\nsrc/components/filter.ts' },
+  { name: 'Glob', status: 'completed', input: traceJson({ pattern: 'src/**/*.test.ts' }), output: 'src/components/search.test.ts\nsrc/lib/search-index.test.ts' },
+  { name: 'Edit', status: 'completed', input: traceJson({ file_path: traceIndex, old_string: '    search(query) {\n      return items.filter(item =>\n        item.title.toLowerCase().includes(query.toLowerCase())', new_string: '    search(query) {\n      const needle = normalize(query);\n      return items.filter(item =>\n        normalize(item.title).includes(needle)' }), output: `The file ${traceIndex} has been updated successfully.` },
+  { name: 'Write', status: 'completed', input: traceJson({ file_path: `${traceRoot}/src/lib/normalize.ts`, content: '// Case- and accent-insensitive comparison key.\nexport function normalize(text: string): string {\n  return text\n    .normalize("NFKD")\n    .replace(/\\p{M}/gu, "")\n    .toLowerCase();\n}\n' }), output: `File created successfully at: ${traceRoot}/src/lib/normalize.ts` },
+  { name: 'WebSearch', status: 'completed', input: traceJson({ query: 'unicode case folding javascript' }), output: 'Web search results for query: "unicode case folding javascript"\n\nLinks: ' + JSON.stringify([{ title: 'String.prototype.toLowerCase() - JavaScript | MDN', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/toLowerCase' }, { title: 'Unicode Case Folding', url: 'https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt' }, { title: 'Case folding in JavaScript — Stack Overflow', url: 'https://stackoverflow.com/questions/1695233/case-folding-javascript' }, { title: 'String.prototype.normalize() - MDN', url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/normalize' }]) },
+  { name: 'WebFetch', status: 'completed', input: traceJson({ url: 'https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/localeCompare', prompt: 'Does localeCompare support case-insensitive comparison?' }), output: 'Yes. Pass `{ sensitivity: "base" }` (or "accent") as the options argument and localeCompare ignores case differences.' },
+  { name: 'TodoWrite', status: 'completed', input: traceJson({ todos: [{ content: 'Normalize queries and titles', status: 'completed', activeForm: 'Normalizing queries and titles' }, { content: 'Run the test suite', status: 'in_progress', activeForm: 'Running the test suite' }, { content: 'Update the README usage notes', status: 'pending', activeForm: 'Updating the README' }] }), output: 'Todos have been modified successfully.' },
+  { name: 'Command', status: 'completed', input: `/bin/zsh -lc "npm test"\nWorking directory: ${traceRoot}`, output: `Exit code: 0\n${sampleTestOutput}` },
+  { name: 'Bash', status: 'failed', input: traceJson({ command: 'npm run lint -- src/lib', description: 'Lint the library folder' }), output: 'src/lib/normalize.ts\n  3:10  error  Unicode property escapes need the "u" flag  regexp/require-unicode-regexp\n\n1 error found\nnpm ERR! Lifecycle script `lint` failed with exit code 1\nExit code: 1\nSample output — no command was executed.' },
+  { name: 'mcp__github__list_pull_requests', status: 'completed', input: traceJson({ owner: 'orbit-labs', repo: 'orbit', state: 'open' }), output: traceJson([{ number: 142, title: 'Faster search index', state: 'open' }, { number: 139, title: 'Keyboard cheat sheet', state: 'open' }]) },
+];
+const traceMessages: Message[] = [
+  { id: 101, sessionId: 'session-5', role: 'user', content: 'Make search ignore case and accents, then check the tests.', createdAt: now - 604800000 },
+  { id: 102, sessionId: 'session-5', role: 'assistant', content: 'I’ll find where the index is used, normalize both sides of the comparison, and run the tests.', createdAt: now - 604790000 },
+  ...traceTools.map((tool, i): Message => ({ id: 110 + i, sessionId: 'session-5', role: 'tool', content: encodeTool({ id: `trace-tool-${i}`, ...tool }), createdAt: now - 604780000 + i * 1000 })),
+  { id: 130, sessionId: 'session-5', role: 'assistant', content: 'Search now compares a normalized form of the query and each title, so case and accents no longer matter.\n\n- Added `normalize()` in `src/lib/normalize.ts`.\n- The tests pass; lint flags the new regex and needs the `u` flag follow-up.', createdAt: now - 604000000 },
+];
+// Trace showcase thread: opt in with ?trace so default session counts stay unchanged.
+const showTrace = typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace');
+const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': traceMessages } : {}), 'session-1': [
   { id: 1, sessionId: 'session-1', role: 'user', content: 'Search feels a little slow. Can you make it respond instantly as I type, and keep the keyboard navigation working?', createdAt: now - 420000 },
   { id: 2, sessionId: 'session-1', role: 'assistant', content: 'I’ll trace how the search input updates the results, then check the keyboard interactions.', createdAt: now - 410000 },
   { id: 3, sessionId: 'session-1', role: 'tool', content: encodeTool({ id: 'sample-read', name: 'Read', status: 'completed', input: 'src/components/search.ts', output: sampleSource }), createdAt: now - 400000 },
@@ -89,6 +119,7 @@ const providers: Provider[] = [
   { id: 'deepseek', name: 'DeepSeek', installed: true, path: '/sample/bin/dsh', version: 'Sample provider', models: [] },
   { id: 'commandcode', name: 'Command Code', installed: true, path: '/sample/bin/command-code', version: '1.87.1 (sample)', models: [] },
   { id: 'omp', name: 'Oh My Pi', installed: false, path: null, version: '', models: [] },
+  { id: 'github-copilot', name: 'GitHub Copilot CLI', installed: true, path: '/sample/bin/copilot', version: 'GitHub Copilot CLI 1.0.82 (sample)', models: [] },
 ];
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
@@ -98,6 +129,20 @@ const previewMimoEndpoints = [
   { id: 'api', url: 'https://api.xiaomimimo.com/anthropic', label: 'Pay-as-you-go API' },
 ];
 let previewMimoEndpoint: string | null = null;
+/** Named connections; secret values are dropped, only their names are kept, as on the native side. */
+let previewConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {} };
+function previewSaveConnection(input: { id?: string | null; provider: ProviderId; name: string; executable?: string | null; args?: string[]; env?: { name: string; value: string | null; secret: boolean }[]; configDir?: string | null }): import('./connections').ConnectionSnapshot {
+  const name = String(input.name ?? '').trim();
+  if (!name || name.length > 60) throw new Error('Give the connection a name of up to 60 characters.');
+  if ((input.args ?? []).length > 32 || (input.args ?? []).some(arg => arg.includes('\0'))) throw new Error('Launch arguments must be non-empty, under 1024 characters and contain no NUL.');
+  const existing = previewConnections.connections.find(c => c.id === input.id);
+  if (input.id && !existing) throw new Error('This connection no longer exists.');
+  const env = input.env ?? [];
+  const next = { id: existing?.id ?? `connection-${Date.now().toString(36)}`, provider: existing?.provider ?? input.provider, name, executable: input.executable || null, args: input.args ?? [], env: Object.fromEntries(env.filter(v => !v.secret).map(v => [v.name, v.value ?? ''])), secretEnv: env.filter(v => v.secret).map(v => v.name), configDir: input.configDir || null, revision: (existing?.revision ?? 0) + 1 };
+  const connections = existing ? previewConnections.connections.map(c => c.id === next.id ? next : c) : [...previewConnections.connections, next];
+  previewConnections = { ...previewConnections, connections };
+  return previewConnections;
+}
 // Representative catalog fixtures only; the native app queries installed harnesses.
 /** Another computer's smaller catalog (PandaCode Connect). */
 const remoteProviders = (): Provider[] => ['claude', 'codex'].map(id => providers.find(p => p.id === id)!).map(p => ({ ...p, models: remoteCatalog(p.id) }));
@@ -120,8 +165,15 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'gpt-6-luna', name: 'GPT-6 Luna', description: 'most efficient OpenAI model for focused, high-volume tasks' },
     { id: 'moonshotai/Kimi-K3', name: 'Kimi K3', description: 'long-horizon coding & knowledge work with 1M context' },
   ],
+  'github-copilot': [{ id: 'default', name: 'Default', description: 'Use the model configured in GitHub Copilot CLI.' }],
   opencode: openCodePreviewModels,
-  glm: [{ id: 'glm-4.7', name: 'GLM-4.7', description: 'Z.ai Coding Plan via Claude Code.' }],
+  glm: [
+    { id: 'glm-5.3', name: 'GLM-5.3', description: 'Current flagship. Availability depends on your plan.' },
+    { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', description: 'Fast, low-cost tier. Availability depends on your plan.' },
+    { id: 'glm-5.3[1m]', name: 'GLM-5.3 · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
+    { id: 'glm-5.3-flash[1m]', name: 'GLM-5.3-Flash · 1M context', description: 'Fast tier with the extended 1M-token context window. Availability depends on your plan.' },
+    { id: 'glm-5-turbo', name: 'GLM-5-Turbo', description: 'Fast general-purpose model. Availability depends on your plan.' },
+  ],
   mimo: [
     { id: 'mimo-v2.6-pro', name: 'MiMo-V2.6-Pro', description: 'Flagship. Token Plan and pay-as-you-go. Availability depends on your plan.' },
     { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
@@ -232,6 +284,8 @@ const previewGithub = (() => {
 })();
 /** A pretend iOS Simulator: two devices and a drawn home screen that answers taps. */
 const previewVm = createPreviewVm();
+const previewDesign = createPreviewDesign();
+const previewSkills = createPreviewSkills();
 const previewCloud = createPreviewCloud();
 const previewSimulator = (() => {
   const devices: { udid: string; name: string; runtime: string; state: string; family: string; deviceType: string; platform?: string; duo?: boolean }[] = [
@@ -568,6 +622,7 @@ const architect = createPreviewArchitect({
 });
 
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
     invoke, emit,
@@ -591,6 +646,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return { sessionId: s.id } as T;
   }
   if (command.startsWith('remote_')) return invokeRemote<T>(command, args, emit);
+  if (command === 'capabilities_inventory' || command === 'cache_alignment') return previewCapabilities(command) as T;
+  if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {
     case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo'].includes(provider.id)).map(provider => {
@@ -613,6 +670,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});
+    }
+    case 'connections_list': result = previewConnections; break;
+    case 'connection_save': result = previewSaveConnection(args.connection); break;
+    case 'connection_delete': {
+      const tasks = Object.fromEntries(Object.entries(previewConnections.tasks).filter(([, id]) => id !== args.id));
+      previewConnections = { connections: previewConnections.connections.filter(c => c.id !== args.id), tasks }; result = previewConnections; break;
+    }
+    case 'connection_assign': {
+      if (args.connectionId && !previewConnections.connections.some(c => c.id === args.connectionId)) throw new Error('This connection no longer exists.');
+      const { [args.sessionId]: _previous, ...tasks } = previewConnections.tasks;
+      previewConnections = { ...previewConnections, tasks: args.connectionId ? { ...tasks, [args.sessionId]: args.connectionId } : tasks }; result = previewConnections; break;
     }
     case 'provider_claude_status': result = {mode: previewClaudeMode, source: 'Saved Claude login', environmentVariables: [], endpoint: null, savedLogin: 'signedIn', conflict: false}; break;
     case 'usage_ledger': result = sampleUsageLedger(); break;
@@ -645,6 +713,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'architect_get': result = architect.get(args.sessionId); break;
     case 'architect_configure': result = architect.configure(args.sessionId, args.config, args.architect, args.profileId); break;
     case 'architect_profiles': result = architect.profiles(); break;
+    case 'architect_set_lead_guidance': result = architect.setLeadGuidance(args.guidance); break;
     case 'architect_save_profile': result = architect.saveProfile(args.id, args.name, args.setup); break;
     case 'architect_delete_profile': result = architect.deleteProfile(args.id); break;
     case 'architect_start': architect.start(args.sessionId, args.text, args.imageIds); break;
@@ -859,7 +928,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
     case 'list_agent_integrations': result = { servers: [{ name: 'Preview documentation', description: 'Sample MCP integration', status: 'ready', authStatus: 'not required', tools: [{ name: 'search_docs', description: 'Search sample documentation.' }] }], skills: [{ name: 'Project guidelines', description: 'Sample skill', status: 'enabled' }], apps: [], warnings: [] }; break;
-    case 'list_app_tools': result = [{ name: 'pandacode_list_tasks', description: 'List project tasks.' }, { name: 'pandacode_open_browser', description: 'Open a URL in the app browser.' }]; break;
+    case 'list_app_tools': result = [{ name: 'pandacode_list_tasks', description: 'List project tasks.' }, { name: 'pandacode_code_search', description: 'Search the checkout with the local codedb index.' }, { name: 'pandacode_open_browser', description: 'Open a URL in the app browser.' }]; break;
+    case 'run_turn_checks': result = { checked: false, reason: 'Browser preview has no project checks.' }; break;
     case 'agent_ui_request_active': result = true; break;
     case 'resolve_agent_ui_action': break;
     case 'open_external_url': { const url = new URL(args.url); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP or HTTPS URL.'); window.open(url.href, '_blank', 'noopener,noreferrer'); break; }
@@ -894,6 +964,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = { deletedSessionIds }; break;
     }
     case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
+    case 'chat_create': {
+      const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
+      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode }); break;
+    }
+    case 'chat_cleanup': {
+      const chat = projects.some(p => p.id === args.projectId && p.path.includes('/PandaCode Chats/')) && !sessions.some(s => s.projectId === args.projectId);
+      if (chat) projects = projects.filter(p => p.id !== args.projectId);
+      result = chat; break;
+    }
     case 'create_board_task': {
       const details = taskDetails(args.title, args.description);
       if (!projects.some(p => p.id === args.projectId)) throw new Error('Project not found.');
@@ -1175,6 +1254,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'vm_frame': result = await previewVm.frame(args.name); break;
     case 'vm_input': result = previewVm.input(args.name, args.input); break;
     case 'vm_desktop': result = previewVm.desktop(args.name); break;
+    case 'design_list': result = previewDesign.list(); break;
+    case 'design_read': result = previewDesign.read(args.name); break;
+    case 'design_comments': result = previewDesign.comments(); break;
+    case 'design_save_comments': result = previewDesign.saveComments(args.comments); break;
+    case 'skills_list': case 'skills_import_folder': case 'skills_import_github': case 'skills_activate':
+    case 'skills_deactivate': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
+      result = previewSkills.call(command, args); break;
     case 'simulator_status': result = previewSimulator.status(); break;
     case 'simulator_pose': result = await previewSimulator.pose(args.udid, args.pose); break;
     case 'simulator_create_duo': result = previewSimulator.createDuo(); break;
@@ -1195,6 +1281,25 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         .map(entry => ({ name: entry.path.split('/').pop()!, ...entry }))
         .sort((a, b) => Number(b.name.toLocaleLowerCase().startsWith(query)) - Number(a.name.toLocaleLowerCase().startsWith(query)) || Number(a.isDir) - Number(b.isDir) || a.path.localeCompare(b.path))
         .slice(0, Math.min(100, Math.max(1, Number(args.limit) || 40))) satisfies FileEntry[];
+      break;
+    }
+    case 'search_text': {
+      // Sample source stands in for every script; Markdown files read as the sample README.
+      const query = String(args.query ?? '');
+      let pattern: RegExp;
+      try {
+        const source = args.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        pattern = new RegExp(args.wholeWord ? `\\b(?:${source})\\b` : source, args.matchCase ? 'g' : 'gi');
+      } catch (error) { throw new Error(`Invalid regular expression: ${(error as Error).message}`); }
+      const files = previewWorkspaceFiles.filter(path => /\.(ts|md)$/.test(path)).map(path => {
+        const lines = (path.endsWith('.md') ? sampleReadme : sampleSource).split('\n');
+        const matches = lines.flatMap((line, index) => {
+          const text = line.trimStart(), ranges = [...text.matchAll(pattern)].filter(m => m[0]).map(m => [m.index!, m.index! + m[0].length]);
+          return ranges.length ? [{ line: index + 1, text, ranges }] : [];
+        });
+        return { path, matches };
+      }).filter(file => file.matches.length);
+      result = { files, truncated: false };
       break;
     }
     case 'import_prompt_image': {

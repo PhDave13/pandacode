@@ -11,13 +11,16 @@ import { mountResourceUsage, resourceUsageHtml } from './resource-usage-settings
 import { colorsSummary } from './theme-settings';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
 import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
+import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
+import { call } from './bridge';
+import { mount as mountCapabilities } from './capabilities-panel';
 import { mountRemoteSettings } from './remote-settings';
 import type { RemoteHost } from './remote-types';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
 
-export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'tools' | 'cloud' | 'remote' | 'github' | 'about';
+export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
 
 interface SettingsOptions {
   providers: Provider[];
@@ -28,6 +31,8 @@ interface SettingsOptions {
   wallpapers: boolean;
   theme: 'light' | 'dark';
   preview: boolean;
+  /** Runs the checkout's fast check after a clean turn and queues one repair on failure. */
+  turnChecks: boolean;
   section?: SettingsSection;
   discover(): Promise<Provider[]>;
   /** Mounts the optional GitHub row; returns its cleanup. */
@@ -38,6 +43,8 @@ interface SettingsOptions {
   teams?: Omit<AgentTeamsOptions, 'providers'>;
   /** Cloud sandbox connections (Daytona, Cloudflare, AWS). */
   cloud?: CloudSettingsHost;
+  /** Skills library and rules registry. */
+  skills?: SkillsLibraryHost;
   /** PandaCode Connect: sign-in, remote control and devices. */
   remote?: RemoteHost;
   embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed };
@@ -51,9 +58,10 @@ export const SECTIONS: { id: SettingsSection; label: string; icon: string; descr
   { id: 'general', label: 'General', icon: 'settings', description: 'Text size, conversation density and the quick launcher.' },
   { id: 'appearance', label: 'Appearance', icon: 'sun', description: 'Theme, accent colors and wallpapers.' },
   { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent, installed agents and their models.' },
-  { id: 'providers', label: 'Providers', icon: 'server', description: 'Connections for Claude Code, GLM, MiMo, OpenCode and Antigravity.' },
+  { id: 'providers', label: 'Providers', icon: 'server', description: 'Connections for Claude Code, GitHub Copilot CLI, GLM, MiMo, OpenCode and Antigravity.' },
   { id: 'teams', label: 'Agent teams', icon: 'grid', description: 'Named teams of models, and the classic team setup.' },
   { id: 'tools', label: 'Tools & add-ons', icon: 'widget', description: 'App tools, MCP servers, skills and Jev.' },
+  { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on per harness, and check for drift.' },
   { id: 'cloud', label: 'Cloud sandboxes', icon: 'globe', description: 'Daytona, Cloudflare and AWS machines for your agents.' },
   { id: 'remote', label: 'Remote access', icon: 'server', description: 'Reach your other computers with PandaCode Connect, end-to-end encrypted.' },
   { id: 'github', label: 'GitHub', icon: 'github', description: 'Issues, pull requests and repositories through the GitHub CLI.' },
@@ -78,6 +86,7 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default agent</strong><small>Used for new tasks.</small></div><button type="button" id="default-provider" class="settings-select" data-action="default-provider" aria-label="Default agent for new tasks" aria-haspopup="dialog" aria-expanded="false">${providerLogo(options.defaultProvider)}<span>${escape(defaultName)}</span>${icon('down')}</button></div>
         <div class="setting-row settings-default-row"><div><strong>Default model</strong><small>Used for new tasks.</small></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong><small>Keep installed agents up to date.</small></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
+        ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
       </div>
       <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh">${icon('refresh')}Refresh agents</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
@@ -89,7 +98,9 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong><small>App tools, MCP servers, and skills.</small></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
         <div class="setting-row"><div><strong>Jev · Optional add-on</strong><small>Browser tests and decision assistance. Your agents work without it.</small></div><button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button></div>
-      </div>`;
+      </div>
+      <div id="capabilities-settings"></div>`;
+    case 'skills': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
     case 'remote': return '<div id="remote-settings"></div>';
     case 'github': return '<div id="github-settings"></div>';
@@ -197,6 +208,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));
     if (id === 'github' && options.github) cleanups.push(options.github(panel.querySelector<HTMLElement>('#github-settings')!));
     if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
+    if (id === 'tools') cleanups.push(mountCapabilities(panel.querySelector<HTMLElement>('#capabilities-settings')!, call));
+    if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));
     if (id === 'about') {
       cleanups.push(mountSupportDetails(panel.querySelector<HTMLDetailsElement>('.support-details')!));

@@ -2404,6 +2404,27 @@ fn empty_guidance_leaves_the_built_in_rules_alone() {
 }
 
 #[test]
+fn the_app_wide_lead_guidance_reaches_teams_that_set_none() {
+    let (state, sid) = state_fixture();
+    let store = state.store.lock().unwrap();
+    store.db.execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
+    let admission = Admission { parent: sid.clone(), generation: 1 };
+    profiles::set_lead_guidance(&store, Some("  Always run the test suite before finishing.  ".into())).unwrap();
+    let rules = prompt(&store, &sid, "Build the parser", Some(&admission)).unwrap();
+    assert!(rules.contains("Always run the test suite before finishing."), "the app-wide guidance reaches a team that sets none");
+    // A team's own guidance replaces it, and changed rules go out in full.
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    team.config.lead_guidance = Some("Only coordinate.".into());
+    save(&store, &mut team).unwrap();
+    let own = prompt(&store, &sid, "Now the renderer", Some(&admission)).unwrap();
+    assert!(own.contains("Only coordinate."));
+    assert!(!own.contains("Always run the test suite before finishing."), "the team's own guidance wins");
+    // Blank settings mean the built-in rules alone.
+    assert!(profiles::set_lead_guidance(&store, Some("   ".into())).unwrap().lead_guidance.is_none());
+    assert!(profiles::set_lead_guidance(&store, Some("x".repeat(2001))).is_err());
+}
+
+#[test]
 fn lead_guidance_is_bounded_to_two_kilobytes() {
     let (state, sid) = state_fixture();
     let store = state.store.lock().unwrap();

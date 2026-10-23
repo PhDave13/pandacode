@@ -6,7 +6,7 @@ const PLAN_APP_TOOLS = new Set([
   'pandacode_list_local_servers', 'pandacode_list_moodboards', 'pandacode_read_moodboard', 'pandacode_read_moodboard_image',
   'pandacode_vm_list', 'pandacode_vm_screenshot', 'pandacode_simulator_devices', 'pandacode_simulator_describe',
   'pandacode_simulator_screenshot', 'pandacode_jev_read', 'pandacode_jev_list', 'pandacode_jev_screenshot',
-  'pandacode_jev_assessments', 'pandacode_bot_recall', 'pandacode_bot_list_schedules',
+  'pandacode_jev_assessments', 'pandacode_bot_recall', 'pandacode_bot_list_schedules', 'pandacode_code_search',
 ]);
 
 export default async function (pi) {

@@ -1,16 +1,21 @@
 /* The GitHub view's Actions tab: recent workflow runs with their event, the pull request each
  * belongs to, attempts and duration, filtered by event and pull request (a pull request row's
  * Runs action opens the same filter). A row expands to its jobs and artifacts, read lazily with
- * `github_run_details`. Runs GitHub couldn't start (`startup_failure`) read "Didn't start". */
+ * `github_run_details`: each job's steps and check-run summary, and a re-run's earlier attempts.
+ * Runs GitHub couldn't start (`startup_failure`) read "Didn't start". */
 import { escape, icon } from './dom';
 import { age } from './github-hub-prompts';
 import { glyph, type HubPull } from './github-hub';
 
 export interface HubRun { id: number; workflow: string; title: string; branch: string; event: string; state: string; createdAt: string; startedAt: string; updatedAt: string; url: string; attempt: number; pulls: number[] }
-export interface RunJob { name: string; state: string; startedAt: string; completedAt: string; url: string }
+export interface RunStep { name: string; state: string; startedAt: string; completedAt: string }
+/** `summary` is the job's check-run summary as Markdown, bounded natively. */
+export interface RunJob { id: number; name: string; state: string; startedAt: string; completedAt: string; url: string; steps: RunStep[]; summary: string }
 export interface RunArtifact { name: string; size: number; expired: boolean }
-export interface RunDetails { jobs: RunJob[]; artifacts: RunArtifact[] }
-export type DetailsLoad = { details?: RunDetails; error?: string };
+export interface RunAttempt { attempt: number; state: string; startedAt: string; updatedAt: string; url: string; jobs: RunJob[] }
+export interface RunDetails { jobs: RunJob[]; artifacts: RunArtifact[]; attempts: RunAttempt[] }
+/** `summaries` holds each job summary already rendered to sanitized HTML, by job id. */
+export type DetailsLoad = { details?: RunDetails; summaries?: Record<number, string>; error?: string };
 /** Event ('' = any), pull request number (0 = any), and whether to keep only each pull request's latest run per workflow. */
 export interface RunFilter { event: string; pull: number; latest: boolean }
 
@@ -75,7 +80,8 @@ function filters(runs: HubRun[], pulls: HubPull[] | undefined, filter: RunFilter
     <select data-gh-run-filter="event" aria-label="Filter runs by event">${option('', 'All events', !filter.event)}${events.map(event => option(event, eventLabel(event), event === filter.event)).join('')}</select>
     <select data-gh-run-filter="pull" aria-label="Filter runs by pull request">${option(0, 'All pull requests', !filter.pull)}${numbers.map(n => option(n, `#${n}${pulls?.find(pull => pull.number === n) ? ` ${pulls.find(pull => pull.number === n)!.title}` : ''}`, n === filter.pull)).join('')}</select>
     <label class="gh-run-latest"><input type="checkbox" data-gh-run-filter="latest" ${filter.latest ? 'checked' : ''}>Latest per pull request</label>
-    ${filter.event || filter.pull || filter.latest ? '<button type="button" class="gh-act" data-gh-run-clear>Clear</button>' : ''}</div>`;
+    ${filter.event || filter.pull || filter.latest ? '<button type="button" class="gh-act" data-gh-run-clear>Clear</button>' : ''}
+    <button type="button" class="gh-act gh-workflow-check" data-gh-workflow-check title="Ask an agent to check .github/workflows for YAML errors, unknown runner labels and missing actions">${icon('spark')}Check workflow files</button></div>`;
 }
 
 function detailsBody(run: HubRun, load: DetailsLoad | undefined, now: number): string {
@@ -83,11 +89,18 @@ function detailsBody(run: HubRun, load: DetailsLoad | undefined, now: number): s
     ? `<p class="gh-note gh-run-blocked">${icon('alert')}GitHub couldn’t start this run. The workflow file is likely invalid (a YAML or schema error), uses an action or reusable workflow that doesn’t exist, or asks for a runner that isn’t available.</p>` : '';
   if (!load) return `${blocked}<p class="gh-note" role="status">Loading jobs…</p>`;
   if (load.error) return `${blocked}<p class="gh-note">Couldn’t load jobs: ${escape(load.error)}</p>`;
-  const { jobs, artifacts } = load.details!;
-  const job = (item: RunJob) => `<li class="gh-job">${statusBadge(item.state)}<span class="gh-row-title">${escape(item.name)}</span><span class="gh-duration">${escape(item.state === 'queued' ? '' : span(item.startedAt, item.completedAt, item.state === 'in_progress', now))}</span>${item.url ? `<button type="button" class="gh-act" data-gh-open="${escape(item.url)}" aria-label="Open job ${escape(item.name)} on GitHub">${icon('external')}</button>` : ''}</li>`;
+  const { jobs, artifacts, attempts = [] } = load.details!;
+  const time = (item: { state: string; startedAt: string; completedAt: string }) => escape(item.state === 'queued' ? '' : span(item.startedAt, item.completedAt, item.state === 'in_progress', now));
+  const step = (item: RunStep) => `<li class="gh-step">${statusBadge(item.state)}<span class="gh-row-title">${escape(item.name)}</span><span class="gh-duration">${time(item)}</span></li>`;
+  const summary = (item: RunJob) => load.summaries?.[item.id] ? `<div class="gh-job-summary md" aria-label="Summary of ${escape(item.name)}">${load.summaries[item.id]}</div>` : '';
+  const job = (item: RunJob) => `<li class="gh-job"><div class="gh-job-head">${statusBadge(item.state)}<span class="gh-row-title">${escape(item.name)}</span><span class="gh-duration">${time(item)}</span>${item.url ? `<button type="button" class="gh-act" data-gh-open="${escape(item.url)}" aria-label="Open job ${escape(item.name)} on GitHub">${icon('external')}</button>` : ''}</div>
+    ${item.steps?.length ? `<ol class="gh-steps" aria-label="Steps of ${escape(item.name)}">${item.steps.map(step).join('')}</ol>` : ''}${summary(item)}</li>`;
+  const attempt = (item: RunAttempt) => `<li class="gh-attempt-item"><div class="gh-job-head">${statusBadge(item.state)}<span class="gh-row-title">Attempt ${item.attempt}</span><span class="gh-duration">${escape(span(item.startedAt, item.updatedAt, item.state === 'in_progress', now))}</span>${item.url ? `<button type="button" class="gh-act" data-gh-open="${escape(item.url)}" aria-label="Open attempt ${item.attempt} on GitHub">${icon('external')}</button>` : ''}</div>
+    ${item.jobs.length ? `<ul>${item.jobs.map(job).join('')}</ul>` : '<p class="gh-note">No jobs ran.</p>'}</li>`;
   const artifact = (item: RunArtifact) => `<li class="gh-artifact">${icon('download')}<span class="gh-row-title">${escape(item.name)}</span><span class="gh-duration">${item.expired ? 'Expired' : escape(size(item.size))}</span></li>`;
   return `${blocked}<div class="gh-run-section"><b>Jobs${run.attempt > 1 ? ` · attempt ${run.attempt}` : ''}</b>${jobs.length ? `<ul>${jobs.map(job).join('')}</ul>` : '<p class="gh-note">No jobs ran.</p>'}</div>
-    <div class="gh-run-section"><b>Artifacts</b>${artifacts.length ? `<ul>${artifacts.map(artifact).join('')}</ul>` : '<p class="gh-note">No artifacts uploaded.</p>'}</div>`;
+    <div class="gh-run-section"><b>Artifacts</b>${artifacts.length ? `<ul>${artifacts.map(artifact).join('')}</ul>` : '<p class="gh-note">No artifacts uploaded.</p>'}</div>
+    ${attempts.length ? `<div class="gh-run-section gh-attempts"><b>Earlier attempts</b><ul>${attempts.map(attempt).join('')}</ul></div>` : ''}`;
 }
 
 export function runsBody(runs: HubRun[], pulls: HubPull[] | undefined, filter: RunFilter, query: string, expanded: Set<number>, details: (run: HubRun) => DetailsLoad | undefined, now = Date.now()): string {

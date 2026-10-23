@@ -6,6 +6,8 @@ import { showPopover, hidePopover } from './popover-motion';
 
 /** A named agent team from Settings, offered beside the models. */
 export type PickerTeam = { id: string; name: string; detail: string; provider: ProviderId; selected: boolean };
+/** A named connection from Settings: its harness's models listed again under its name. */
+export type PickerConnection = { id: string; name: string; provider: ProviderId };
 type ModelPickerOptions = {
   teams?: PickerTeam[];
   onTeamSelect?: (id: string) => Promise<void>;
@@ -13,7 +15,10 @@ type ModelPickerOptions = {
   providers: Provider[];
   current: { provider: ProviderId; model: string; reasoningEffort?: string | null; contextUsage?: ContextUsage | null };
   canSwitchProvider: boolean;
-  onSelect: (provider: ProviderId, model: string) => Promise<void>;
+  connections?: PickerConnection[];
+  /** The task's connection; null is the harness's own setup. */
+  currentConnection?: string | null;
+  onSelect: (provider: ProviderId, model: string, connection: string | null) => Promise<void>;
   onEffortSelect?: (effort: string | null) => Promise<void>;
   loadModels?: (provider: ProviderId) => Promise<ProviderModel[]>;
   /** Another computer's harnesses: the picker opens with a loading row, then lists them, or one disabled row with the error. */
@@ -36,6 +41,8 @@ function rememberRecent(provider: ProviderId, model: string): void {
   if (model === 'default') return;
   try { localStorage.setItem(recentKey(provider), JSON.stringify([model, ...storedRecent(provider).filter(id => id !== model)].slice(0, RECENT_LIMIT))); } catch { /* Ordering only. */ }
 }
+
+const optionKey = (button: HTMLElement) => `${button.dataset.connection ?? ''}|${button.dataset.provider}:${button.dataset.model}`;
 
 /** A transient picker with local state and listeners released on dismissal. */
 export function openModelPicker(options: ModelPickerOptions): () => void {
@@ -135,7 +142,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   function setActive(button?: HTMLButtonElement, focus = false): void {
     list.querySelectorAll('.model-menu-active').forEach(el => el.classList.remove('model-menu-active'));
     if (!button) { activeKey = ''; return; }
-    activeKey = `${button.dataset.provider}:${button.dataset.model}`;
+    activeKey = optionKey(button);
     button.classList.add('model-menu-active');
     if (focus) button.focus({ preventScroll: true });
     button.scrollIntoView({ block: 'nearest' });
@@ -243,7 +250,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   function renderChoices(): void {
     if (closed) return;
     const focused = panel.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLButtonElement>('.model-menu-option') : null;
-    const focusedKey = focused ? `${focused.dataset.provider}:${focused.dataset.model}` : '';
+    const focusedKey = focused ? optionKey(focused) : '';
     const query = search.value.trim();
     const normalized = query.toLowerCase();
     const namedHarness = providers.some(provider => [provider.id, provider.name].some(name => name.toLowerCase() === normalized));
@@ -252,23 +259,26 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const teamSelected = options.teams?.some(team => team.selected) ?? false;
     total += teams.length;
     const teamMarkup = teams.length ? `<section class="model-menu-group" aria-label="Agent teams"><div class="model-menu-group-heading"><h3>${icon('worktree')}Agent teams</h3></div>${teams.map(team => `<button type="button" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(team.detail)}" ${team.selected ? 'aria-current="true"' : ''}>${providerLogo(team.provider)}<span class="model-menu-option-label"><span>${escape(team.name)}</span><span class="model-menu-description">${escape(team.detail)}</span></span>${team.selected ? icon('check') : ''}</button>`).join('')}</section>` : '';
-    let markup = teamMarkup + providers.map(provider => {
+    const connections = options.connections ?? [];
+    const currentConnection = options.currentConnection ?? null;
+    let markup = teamMarkup + providers.flatMap(provider => [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({ provider, connection }))).map(({ provider, connection }) => {
+      const groupName = connection?.name ?? provider.name;
       const models = modelChoices(provider.id, provider.models, provider.id === current.provider ? current.model : '');
-      const providerMatches = [provider.id, provider.name].some(name => name.toLowerCase().includes(normalized));
+      const providerMatches = [provider.id, provider.name, groupName].some(name => name.toLowerCase().includes(normalized));
       const visible = query ? models.filter(model => providerMatches || [model.id, model.name, model.description].some(value => value.toLowerCase().includes(normalized))) : shortList(provider.id, models);
       const locked = !canSwitchProvider && provider.id !== current.provider;
       const unavailable = !provider.installed;
-      const custom = Boolean(query && !namedHarness && !models.some(model => [model.id, model.name].some(value => value.toLowerCase() === normalized)) && !locked);
+      const custom = provider.id !== 'github-copilot' && Boolean(query && !namedHarness && !models.some(model => [model.id, model.name].some(value => value.toLowerCase() === normalized)) && !locked);
       if (!visible.length && !custom) return '';
       const disabled = locked || unavailable;
       const row = (model: ProviderModel, isCustom: boolean): string => {
         total++;
-        const selected = !teamSelected && provider.id === current.provider && model.id === (current.model || 'default');
-        const accessible = isCustom ? `Use "${model.id}" with ${provider.name}` : `${provider.name} · ${model.name}`;
+        const selected = !teamSelected && provider.id === current.provider && model.id === (current.model || 'default') && (connection?.id ?? null) === currentConnection;
+        const accessible = isCustom ? `Use "${model.id}" with ${groupName}` : `${groupName} · ${model.name}`;
         const detail = [model.contextWindow ? `${tokenCount(model.contextWindow)} context` : '', model.description || (model.name !== model.id && model.id !== 'default' ? model.id : '')].filter(Boolean).join(' · ');
-        return `<button type="button" class="model-menu-option${selected ? ' model-menu-current' : ''}" data-provider="${provider.id}" data-model="${escape(model.id)}" data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(detail)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'disabled' : ''}>${providerLogo(provider.id)}<span class="model-menu-option-label">${isCustom ? `<span class="model-menu-custom-label">Use custom model</span><span>${escape(model.id)}</span>` : `<span>${escape(model.name)}</span>${detail ? `<span class="model-menu-description">${escape(detail)}</span>` : ''}`}</span>${selected ? icon('check') : isCustom ? icon('plus') : ''}</button>`;
+        return `<button type="button" class="model-menu-option${selected ? ' model-menu-current' : ''}" data-provider="${provider.id}" data-model="${escape(model.id)}"${connection ? ` data-connection="${escape(connection.id)}"` : ''} data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(detail)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'disabled' : ''}>${providerLogo(provider.id)}<span class="model-menu-option-label">${isCustom ? `<span class="model-menu-custom-label">Use custom model</span><span>${escape(model.id)}</span>` : `<span>${escape(model.name)}</span>${detail ? `<span class="model-menu-description">${escape(detail)}</span>` : ''}`}</span>${selected ? icon('check') : isCustom ? icon('plus') : ''}</button>`;
       };
-      return `<section class="model-menu-group" aria-label="${escape(provider.name)}"><div class="model-menu-group-heading"><h3>${providerLogo(provider.id)}${escape(provider.name)}</h3>${locked ? '<span>New task required</span>' : unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${provider.id}" hidden>Loading…</span>`}</div>${visible.map(model => row(model, false)).join('')}${custom ? row(fallbackModel(provider.id, query), true) : ''}</section>`;
+      return `<section class="model-menu-group" aria-label="${escape(groupName)}"${connection ? ` data-connection-group="${escape(connection.id)}"` : ''}><div class="model-menu-group-heading"><h3>${providerLogo(provider.id)}${escape(groupName)}</h3>${locked ? '<span>New task required</span>' : unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${provider.id}" hidden>Loading…</span>`}</div>${visible.map(model => row(model, false)).join('')}${custom ? row(fallbackModel(provider.id, query), true) : ''}</section>`;
     }).join('');
     if (providersStatus) markup = `<button type="button" class="model-menu-option" data-available="false" disabled>${icon('monitor')}<span class="model-menu-option-label"><span>${escape(providersStatus)}</span></span></button>`;
     else if (!total) markup = '<p class="model-menu-empty">No matching models.</p>';
@@ -277,14 +287,14 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       list.innerHTML = markup;
       choicesMarkup = markup;
       const buttons = enabledButtons();
-      const restore = buttons.find(button => `${button.dataset.provider}:${button.dataset.model}` === focusedKey);
-      const next = restore ?? buttons.find(button => `${button.dataset.provider}:${button.dataset.model}` === activeKey) ?? buttons.find(button => button.getAttribute('aria-current') === 'true') ?? buttons[0];
+      const restore = buttons.find(button => optionKey(button) === focusedKey);
+      const next = restore ?? buttons.find(button => optionKey(button) === activeKey) ?? buttons.find(button => button.getAttribute('aria-current') === 'true') ?? buttons[0];
       setActive(next, Boolean(focused));
       if (focused && !next) search.focus({ preventScroll: true });
     }
     list.querySelectorAll<HTMLElement>('[data-catalog-loading]').forEach(status => { status.hidden = !catalogLoading.has(status.dataset.catalogLoading as ProviderId); });
     catalogError.hidden = catalogErrors.size === 0;
-    catalogError.textContent = catalogErrors.size ? `Could not load models for ${providers.filter(provider => catalogErrors.has(provider.id)).map(provider => provider.name).join(', ')}. You can enter a model ID.` : '';
+    catalogError.textContent = catalogErrors.size ? `Could not load models for ${providers.filter(provider => catalogErrors.has(provider.id)).map(provider => provider.name).join(', ')}. You can enter model IDs for agents that support custom models.` : '';
     updateControls();
     position();
   }
@@ -298,7 +308,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     try {
       if (button.dataset.team) await options.onTeamSelect?.(button.dataset.team);
       else {
-        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!);
+        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!, button.dataset.connection ?? null);
         if (options.recent) rememberRecent(button.dataset.provider as ProviderId, button.dataset.model!);
       }
       close();
@@ -396,7 +406,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       setActive(buttons[next], true);
     } else if (event.key === 'Enter' && document.activeElement === search) {
       event.preventDefault();
-      const button = enabledButtons().find(button => `${button.dataset.provider}:${button.dataset.model}` === activeKey);
+      const button = enabledButtons().find(button => optionKey(button) === activeKey);
       if (button) void select(button);
     }
   });

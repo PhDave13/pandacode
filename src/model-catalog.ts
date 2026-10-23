@@ -3,7 +3,7 @@ import type { ContextUsage, ProviderId, ProviderModel } from './types';
 /** Unknown IDs stay literal; never infer a version from a moving alias. */
 export function fallbackModel(provider: ProviderId, id = 'default'): ProviderModel {
   id ||= 'default';
-  if (id === 'default' && provider === 'glm') return { id, name: 'GLM-4.7', description: 'Default Z.AI Coding Plan model via Claude Code.' };
+  if (id === 'default' && provider === 'glm') return { id, name: 'GLM-5.3', description: 'Default Z.AI Coding Plan model via Claude Code.' };
   if (id === 'default' && provider === 'mimo') return { id, name: 'MiMo-V2.6-Pro', description: 'Default MiMo Token Plan model via Claude Code.' };
   if (id === 'default') return { id, name: 'Default', description: 'Uses the model selected by your harness.' };
   const alias = provider === 'claude' ? ({ sonnet: 'Claude Sonnet', opus: 'Claude Opus', haiku: 'Claude Haiku' } as Record<string, string>)[id] : '';

@@ -273,16 +273,54 @@ test('a run expands to its jobs with durations and its artifacts', async ({ page
   await run.getByRole('button', { name: 'Details' }).click();
   await expect(run.getByRole('button', { name: 'Details' })).toHaveAttribute('aria-expanded', 'true');
   const details = hub(page).locator('#gh-run-9087');
-  await expect(details.locator('.gh-job')).toHaveCount(2);
-  await expect(details.locator('.gh-job').nth(0)).toContainText('lint');
-  await expect(details.locator('.gh-job').nth(0).locator('.gh-duration')).toHaveText('45s');
-  await expect(details.locator('.gh-job').nth(1).locator('.gh-status')).toHaveText('Failed');
+  const jobs = details.locator('.gh-run-section').first().locator('.gh-job');
+  await expect(jobs).toHaveCount(2);
+  await expect(jobs.nth(0)).toContainText('lint');
+  await expect(jobs.nth(0).locator('.gh-job-head .gh-duration')).toHaveText('45s');
+  await expect(jobs.nth(1).locator('.gh-job-head .gh-status')).toHaveText('Failed');
   await expect(details).toContainText('attempt 2');
   await expect(details.locator('.gh-artifact').nth(0)).toContainText('playwright-report');
   await expect(details.locator('.gh-artifact').nth(0)).toContainText('2.3 MB');
   await expect(details.locator('.gh-artifact').nth(1)).toContainText('Expired');
   await run.getByRole('button', { name: 'Details' }).click();
   await expect(details).toHaveCount(0);
+});
+
+test('a run’s jobs show their steps and summary, and a re-run lists its earlier attempts', async ({ page }) => {
+  await openHub(page);
+  await tab(page, /Actions/).click();
+  const run = hub(page).locator('.gh-run[data-gh-run="9087"]');
+  await run.hover();
+  await run.getByRole('button', { name: 'Details' }).click();
+  const details = hub(page).locator('#gh-run-9087');
+  const steps = details.getByRole('list', { name: 'Steps of test (ubuntu-latest)' }).first().locator('.gh-step');
+  await expect(steps).toHaveCount(3);
+  await expect(steps.nth(2)).toContainText('Run tests');
+  await expect(steps.nth(2).locator('.gh-status')).toHaveText('Failed');
+  await expect(steps.nth(2).locator('.gh-duration')).toHaveText('3m 30s');
+  // The summary is Markdown, sanitized: no script survives.
+  const summary = details.locator('.gh-job-summary');
+  await expect(summary.locator('strong')).toHaveText('2 failed');
+  await expect(summary.locator('li')).toHaveCount(2);
+  await expect(summary.locator('script')).toHaveCount(0);
+  const attempts = details.locator('.gh-attempts');
+  await expect(attempts).toContainText('Earlier attempts');
+  await expect(attempts.locator('.gh-attempt-item')).toHaveCount(1);
+  await expect(attempts.locator('.gh-attempt-item .gh-job-head').first()).toContainText('Attempt 1');
+  await expect(attempts.getByRole('button', { name: 'Open attempt 1 on GitHub' })).toBeVisible();
+  // Fix on a re-run asks the agent to compare attempts.
+  await run.hover();
+  await run.getByRole('button', { name: 'Fix' }).click();
+  await expect(page.locator('#transcript .user-message').last()).toContainText('gh run view 9087 --attempt N');
+});
+
+test('Check workflow files hands the workflow check to an agent', async ({ page }) => {
+  await openHub(page);
+  await tab(page, /Actions/).click();
+  await hub(page).getByRole('button', { name: 'Check workflow files' }).click();
+  await expectSideThread(page);
+  await expect(page.locator('#transcript .user-message').last()).toContainText('runs-on');
+  await expect(page.locator('#navigation .task-item.selected')).toContainText('Check workflow files');
 });
 
 test('a run GitHub couldn’t start reads “Didn’t start”, and Fix looks at the workflow file', async ({ page }) => {

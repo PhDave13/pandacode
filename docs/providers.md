@@ -33,6 +33,46 @@ is limited to 8 seconds and 1 MiB of output. Provider-supplied `displayName` val
 take precedence; entries without display metadata show the exact wire model name.
 See [Kimi model configuration](https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/config-files#models).
 
+## Named connections
+
+Settings → Providers → Connections adds named setups of one harness, such as
+`Claude Work` and `Claude Personal`, or two Pi profiles. Each connection has a
+name, an optional executable, extra launch arguments (one per line; at most 32,
+each under 1024 characters, no NUL), environment variables and, for harnesses
+that read one, a config folder: `CLAUDE_CONFIG_DIR` (Claude Code, GLM, MiMo),
+`CODEX_HOME` (Codex), `PI_CODING_AGENT_DIR` (Pi) or `OPENCODE_CONFIG_DIR`
+(OpenCode). Other harnesses take their folder variable under Environment.
+
+Connections live in `connections.json` beside the provider settings
+(`src-tauri/src/connections.rs`). Variables marked Secret are stored in the OS
+secure store (service `app.pandacode.connections`, one account per connection
+and variable); the file and the webview only see their names, and an edit that
+leaves a secret empty keeps the saved value. Deleting a connection removes its
+secrets and returns its tasks to the harness's own setup.
+
+The model picker lists each connection as its own group (`Claude Work · Claude
+Sonnet 5`); choosing a row sets the task's connection (`connection_assign`),
+and the composer label shows it. The assignment is kept per task in the same
+file, so no schema change was needed, and a task never changes connection on
+its own. A task without one, or whose harness no longer matches its connection,
+uses the global configuration exactly as before.
+
+At launch (`run_inner` in `providers.rs`, and warm Claude agents in
+`providers/warm.rs`) the connection's executable replaces the discovered one,
+its arguments are appended and its environment, including the config folder
+variable, is set after the harness's own configuration. Secret values are
+removed from any error the run returns. The warm-agent key includes the
+connection id and its revision, so another connection, or a saved change to the
+same one, never adopts an idle process. Model catalogs, usage checks and slash
+command discovery still use the global setup. Tasks running on another
+computer use that computer's setup.
+
+## GitHub Copilot CLI
+
+Install GitHub Copilot CLI using [GitHub's installation guide](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli), then sign in in a terminal with `copilot login`. PandaCode discovers or uses the configured `copilot` executable and starts its local ACP stdio server with `copilot --no-auto-update --acp --stdio`. The CLI owns GitHub authentication; PandaCode does not store GitHub credentials or add a separate login flow. ACP support is a public preview; see [GitHub's ACP reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server).
+
+The model picker reads only ACP metadata. It offers the models Copilot advertises and keeps **Default** available if the catalog is empty or unavailable. A model override is sent only when Copilot advertises that setting; the picker does not accept arbitrary model IDs for this provider. Copilot CLI 1.0.82 advertised task modes Agent, Plan and Autopilot, plus an Allow All setting, but no model catalog. PandaCode maps Agent with Allow All off to **Standard**, Plan with Allow All off to **Plan mode**, and Agent with Allow All on to **Full access**. Autopilot is not exposed because it does not map to a PandaCode permission mode. In Plan mode, read, search and think requests can proceed while other permission requests are declined. No prompt is sent during catalog discovery.
+
 ## Claude login and environment credentials
 
 Open **Settings → Agents → Set up → Claude Code** to see the credential source
@@ -336,8 +376,12 @@ non-read actions; Full access allows actions. The selected built-in `build` or
 OpenCode configuration files are rewritten.
 
 GLM uses Claude Code's existing bidirectional streaming protocol with Z.AI's
-`https://api.z.ai/api/anthropic` endpoint. Its default is `glm-4.7`; the other
-choices are documented Coding Plan model IDs, not fictional Claude aliases. Model
+`https://api.z.ai/api/anthropic` endpoint. Its default is `glm-5.3`; the other
+choices are documented Coding Plan model IDs, not fictional Claude aliases.
+Legacy Coding Plan IDs (`glm-5.2`, `glm-5.1`, `glm-4.7`) are routed server-side
+to current models, so the picker lists the current lineup — `glm-5.3`,
+`glm-5.3-flash`, their `[1m]` variants, and the still-advertised
+`glm-5-turbo`. Model
 availability depends on the user's Z.AI plan; custom IDs remain available. Claude's
 normal model catalog cannot advertise Z.AI plan entitlements, so this picker uses
 the published Coding Plan list and does not claim measured context/effort metadata.

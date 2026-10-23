@@ -281,8 +281,30 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
     if provider == "antigravity" {
         return Err("Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.".into());
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp") {
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot") {
         return Err("Choose a supported coding harness.".into());
+    }
+    if provider == "github-copilot" {
+        if resume_id.is_some() {
+            return Err("Copilot CLI's interactive console cannot resume an ACP task. Continue the task in PandaCode instead.".into());
+        }
+        if context.mode != "ask" {
+            return Err("Copilot CLI's interactive console cannot enforce this task's approval mode. Use task chat instead.".into());
+        }
+        if context.reasoning_effort.is_some() {
+            return Err("Copilot CLI's interactive console does not accept PandaCode reasoning overrides.".into());
+        }
+        let mut args = vec!["--no-auto-update".into()];
+        if let Some(model) = context
+            .model
+            .filter(|model| !model.is_empty() && *model != "default")
+        {
+            if model.len() > 200 || model.chars().any(char::is_control) {
+                return Err("Invalid harness model.".into());
+            }
+            args.push(format!("--model={model}"));
+        }
+        return Ok(args);
     }
     if resume_id.is_some_and(|id| {
         id.is_empty()
@@ -380,7 +402,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
         }
         args.extend(["--model".into(), model.into()]);
     } else if provider == "glm" {
-        args.extend(["--model".into(), "glm-4.7".into()]);
+        args.extend(["--model".into(), "glm-5.3".into()]);
     } else if provider == "mimo" {
         args.extend(["--model".into(), "mimo-v2.6-pro".into()]);
     }
@@ -920,6 +942,37 @@ mod tests {
         }
         assert!(harness_arguments(&HarnessContext { reasoning_effort: Some("max"), ..context }).is_err());
     }
+
+    #[test]
+    fn copilot_console_uses_the_direct_cli_only_when_task_controls_are_not_needed() {
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "github-copilot",
+            resume_id: None,
+            model: Some("default"),
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        assert_eq!(harness_arguments(&context).unwrap(), ["--no-auto-update"]);
+        let selected_model = harness_arguments(&HarnessContext {
+            model: Some("claude-sonnet-4.5"),
+            ..context
+        })
+        .unwrap();
+        assert_eq!(selected_model, ["--no-auto-update", "--model=claude-sonnet-4.5"]);
+        for mode in ["auto", "plan", "full"] {
+            assert!(harness_arguments(&HarnessContext { mode, ..context })
+                .unwrap_err()
+                .contains("cannot enforce"));
+        }
+        assert!(harness_arguments(&HarnessContext {
+            resume_id: Some("copilot-session"),
+            ..context
+        })
+        .unwrap_err()
+        .contains("cannot resume"));
+    }
+
     #[test]
     fn harness_console_explicitly_preserves_restricted_permissions() {
         let context = HarnessContext {

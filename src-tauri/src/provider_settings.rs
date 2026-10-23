@@ -350,12 +350,19 @@ pub async fn provider_configuration() -> Result<Configuration> {
 }
 
 fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
-    if !matches!(provider, "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "omp") {
+    if !matches!(
+        provider,
+        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot"
+    ) {
         return Err("This provider does not support an executable override.".into());
     }
     if path.trim().is_empty() {
         return Ok(None);
     }
+    validated_executable_path(path)
+}
+/// An absolute path to an existing executable file, canonicalized.
+pub(crate) fn validated_executable_path(path: &str) -> Result<Option<String>> {
     if path.len() > 4096 || path.chars().any(char::is_control) || !Path::new(path).is_absolute() {
         return Err("Choose an absolute path to the installed executable.".into());
     }

@@ -21,6 +21,16 @@ concurrency limits as the UI. Starting/following up on the current running task
 is rejected. Use Codex's shell tool for command execution and its image tool to
 inspect the local PNG returned by `pandacode_capture_browser`.
 
+`pandacode_code_search` searches the task's checkout through the local
+third-party `codedb` CLI when it is installed and on the app's PATH: a text
+query by default, or symbol search with `symbols: true`. It is read-only and
+runs as one bounded process per query (64 KiB of output, a 30-second deadline)
+with `CODEDB_NO_TELEMETRY=1`; there is no daemon or resident index service, and
+nothing is written inside the project (codedb keeps its own index data in its
+home directory). Results are untrusted data. When codedb is absent the tool says so,
+and agents keep their harness's own search tools. The tool runs without an
+approval prompt, like the other read-only app tools.
+
 Host callbacks are outside Codex's shell sandbox, so PandaCode enforces its own
 approval boundary: mutations and browser/UI access request approval in Standard
 and Auto modes, are unavailable in Plan mode, and run without a prompt only when

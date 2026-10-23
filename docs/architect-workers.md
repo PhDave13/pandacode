@@ -11,7 +11,9 @@ assignment's streamed response, tools, saved conversation, and approval requests
 **Lead guidance** adds your own instructions to the built-in architect rules — for
 example, that the architect should only coordinate and never edit files itself. It
 is sent with the rules, so it reaches the architect whenever the rules do, and
-**Reset to default** clears it back to the built-in rules alone. It is added after
+**Reset to default** clears it back to the app-wide guidance, or the built-in rules alone when none is set. Settings → Agents
+sets one for every team; a team's own guidance, set in its setup, replaces it for
+that team. It is added after
 the built-in rules and never replaces them, including the guard that treats worker
 output as data rather than instructions.
 
@@ -242,7 +244,7 @@ Configuration includes one to six worker profiles, `maxParallel` (0 for Unlimite
 or a positive integer for a finite limit),
 `maxRounds` (1–20), `maxAssignments` (1–50), `summaryLimit` (512–6000 UTF-8
 bytes), and optional `leadGuidance` (under 2000 UTF-8 bytes; absent or blank means the
-built-in rules alone). `workspace` is currently `shared`. Limits and summaries do not authorize
+app-wide guidance, else the built-in rules alone). `workspace` is currently `shared`. Limits and summaries do not authorize
 broader permissions. Each assignment retains its original model selection even
 when the team's profiles change. `TeamSnapshot.pendingSetup` contains the queued
 `{architect, config}` until the parent process finishes; it is persisted with the

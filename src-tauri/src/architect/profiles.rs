@@ -25,7 +25,22 @@ impl ModelSelection {
         }
     }
     fn validate(&self) -> Result<()> {
-        if !["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "omp"].contains(&self.provider.as_str())
+        if ![
+            "claude",
+            "codex",
+            "kimi",
+            "opencode",
+            "glm",
+            "antigravity",
+            "grok",
+            "mimo",
+            "pi",
+            "deepseek",
+            "commandcode",
+            "omp",
+            "github-copilot",
+        ]
+        .contains(&self.provider.as_str())
             || self.model.len() > 200
             || self.model.contains('\0')
         {
@@ -64,6 +79,9 @@ pub struct TeamLibrary {
     pub last_setup: Option<TeamSetup>,
     pub active_profile_id: Option<String>,
     pub profiles: Vec<TeamProfile>,
+    /// Lead guidance for every team that does not set its own, from Settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead_guidance: Option<String>,
 }
 
 pub(crate) fn initialize(store: &Store) -> Result<()> {
@@ -299,6 +317,26 @@ pub(crate) fn create_user_task(
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(task)
 }
+/// Replaces the app-wide lead guidance. Blank or absent means the built-in rules alone.
+pub(crate) fn set_lead_guidance(
+    store: &Store,
+    guidance: Option<String>,
+) -> Result<TeamLibrary> {
+    let mut library = read(store)?;
+    library.lead_guidance = guidance
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
+    if let Some(guidance) = &library.lead_guidance {
+        if guidance.len() > super::MAX_LEAD_GUIDANCE || guidance.contains('\0') {
+            return Err(format!(
+                "Lead guidance must be under {} bytes.",
+                super::MAX_LEAD_GUIDANCE
+            ));
+        }
+    }
+    write(store, &library)?;
+    Ok(library)
+}
 #[tauri::command]
 pub async fn architect_profiles(state: State<'_, AppState>) -> Result<TeamLibrary> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -313,6 +351,14 @@ pub async fn architect_save_profile(
 ) -> Result<TeamLibrary> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     save_profile(&store, id, name, setup)
+}
+#[tauri::command]
+pub async fn architect_set_lead_guidance(
+    state: State<'_, AppState>,
+    guidance: Option<String>,
+) -> Result<TeamLibrary> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    set_lead_guidance(&store, guidance)
 }
 #[tauri::command]
 pub async fn architect_delete_profile(

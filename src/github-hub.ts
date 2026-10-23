@@ -4,12 +4,12 @@
  * merge, solve. The Actions tab (github-actions.ts) lists recent workflow runs by event and pull
  * request, and a failed or unstarted one can be handed to an agent to fix. A repository without a local checkout can be browsed and cloned. */
 import './github-hub.css';
-import { escape, icon, morph } from './dom';
+import { escape, icon, markdownHtml, morph } from './dom';
 import { runsBody, statusBadge, type DetailsLoad, type HubRun, type RunDetails, type RunFilter } from './github-actions';
 import { cascade, trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import { taskStage } from './task-board';
-import { age, connectAdvice, isRecent, issuePrompt, PULL_ACTIONS, pullPrompt, runPrompt, runTitle, threadTitle, type IssueAction, type PullAction } from './github-hub-prompts';
+import { age, connectAdvice, isRecent, issuePrompt, PULL_ACTIONS, pullPrompt, runPrompt, runTitle, threadTitle, WORKFLOW_CHECK_TITLE, workflowCheckPrompt, type IssueAction, type PullAction } from './github-hub-prompts';
 import type { Project, Session, TaskLink } from './types';
 
 export interface HubRepo { nameWithOwner: string; description: string; private: boolean; fork: boolean; archived: boolean; pushedAt: string; url: string; defaultBranch: string; openIssues: number; language: string }
@@ -252,6 +252,10 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     const project = await ensureLocal(); if (!project) return;
     await host.startTask({ projectId: project.id, prompt: runPrompt(run), title: runTitle(run), send: true });
   }
+  async function checkWorkflows(): Promise<void> {
+    const name = selected, project = await ensureLocal(); if (!project) return;
+    await host.startTask({ projectId: project.id, prompt: workflowCheckPrompt(name), title: WORKFLOW_CHECK_TITLE, send: true });
+  }
   function showTab(next: Tab): void {
     tab = next; store('pandacode.githubTab', tab); renderTabs(); renderBody(); cascade(root.querySelectorAll<HTMLElement>('.gh-body .gh-row'), 14, 120);
   }
@@ -261,7 +265,13 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     const key = detailsKey(run), name = selected;
     renderBody();
     if (!expanded.has(run.id) || details.has(key)) return;
-    try { details.set(key, { details: await host.call<RunDetails>('github_run_details', { repo: name, id: run.id }) }); }
+    try {
+      const loaded = await host.call<RunDetails>('github_run_details', { repo: name, id: run.id });
+      // Summaries are rendered once here, sanitized by markdownHtml, so the synchronous body can hold them.
+      const jobs = [...loaded.jobs, ...(loaded.attempts ?? []).flatMap(attempt => attempt.jobs)].filter(job => job.summary);
+      const summaries = Object.fromEntries(await Promise.all(jobs.map(async job => [job.id, await markdownHtml(job.summary)] as const)));
+      details.set(key, { details: loaded, summaries });
+    }
     catch (cause) { details.set(key, { error: cause instanceof Error ? cause.message : String(cause) }); }
     if (!disposed && name === selected) renderBody();
   }
@@ -282,6 +292,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (data.ghRepo) { select(data.ghRepo); return; }
     if (data.ghTab) { showTab(data.ghTab as Tab); return; }
     if (data.ghRunPull) { filterRunsBy(Number(data.ghRunPull)); return; }
+    if ('ghWorkflowCheck' in data) { void checkWorkflows(); return; }
     if ('ghRunClear' in data) { runFilter = { event: '', pull: 0, latest: false }; renderBody(); return; }
     if (data.ghTask) { host.openTask(data.ghTask); return; }
     if (data.gh === 'refresh') { void loadRepos(true); return; }
@@ -323,10 +334,21 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   };
   /** Arrow keys move through a list like a native one; Enter activates the row's first action. */
   const keydown = (event: KeyboardEvent) => {
-    if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+    if (!['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)) return;
     const current = (event.target as HTMLElement).closest<HTMLElement>('.gh-repo, .gh-row');
     if (!current) return;
-    const rows = [...current.parentElement!.querySelectorAll<HTMLElement>(current.classList.contains('gh-repo') ? '.gh-repo' : '.gh-row')];
+    if (event.key === 'Enter') {
+      // A button answers Enter on its own; only a row that holds the focus needs one.
+      if ((event.target as HTMLElement).closest('button')) return;
+      const action = current.querySelector<HTMLElement>('.gh-actions button');
+      if (!action) return;
+      event.preventDefault();
+      action.click();
+      return;
+    }
+    // The rows belong to the list, not to the row's own parent: a run sits in a wrapper.
+    const scope = current.closest<HTMLElement>('.gh-list, .gh-repo-list') ?? current.parentElement!;
+    const rows = [...scope.querySelectorAll<HTMLElement>(current.classList.contains('gh-repo') ? '.gh-repo' : '.gh-row')];
     const next = rows[rows.indexOf(current) + (event.key === 'ArrowDown' ? 1 : -1)];
     if (!next) return;
     event.preventDefault(); next.focus();

@@ -138,7 +138,19 @@ fn new_user_tasks_default_to_full_without_overriding_requested_modes_or_saved_ta
             apply(&state, &source.id, &setup(), None).unwrap();
         }
         let store = state.store.lock().unwrap();
-        for provider in ["claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo"] {
+        for provider in [
+            "claude",
+            "codex",
+            "kimi",
+            "glm",
+            "opencode",
+            "antigravity",
+            "grok",
+            "mimo",
+            "pi",
+            "deepseek",
+            "github-copilot",
+        ] {
             let existing = store
                 .create_session(&source.project_id, provider, "default", "plan")
                 .unwrap();

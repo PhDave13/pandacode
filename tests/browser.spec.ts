@@ -54,7 +54,7 @@ test.describe('browser workspace', () => {
     await installPreviewProbe(page);
     await page.goto('/');
     await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
-    await page.locator('#inspector-toggle').click();
+    await expect(page.locator('#inspector')).toBeVisible();
   });
 
   test('file previews open HTML and SVG in the browser with a separate source action', async ({ page }) => {

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode'];
+const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'github-copilot'];
 const usageButton = (page: Page) => page.getByRole('button', { name: 'Agent usage', exact: true });
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Agent usage', exact: true });
 const card = (page: Page, name: string) => dialog(page).locator('.usage-card').filter({ hasText: name });
@@ -40,6 +40,7 @@ async function openApp(page: Page, hold: string[] = [], failures: string[] = [])
         glm: result('glm', 'error', 'The GLM usage service is temporarily unavailable.'),
         grok: result('grok', 'unsupported', 'Grok Build does not expose account usage.'),
         mimo: result('mimo', 'unavailable', 'Usage is not available for this MiMo account.'),
+        'github-copilot': result('github-copilot', 'unsupported', 'GitHub Copilot CLI does not expose usage limits through this agent.'),
       },
     };
   }, { hold, failures, ledgerFixture: ledger() });

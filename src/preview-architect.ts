@@ -37,7 +37,7 @@ export function createPreviewArchitect(host: PreviewHost) {
     return Number(value);
   }
   function validateSelection(selection: ModelSelection): ModelSelection {
-    if (!selection || !['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'omp'].includes(selection.provider) || typeof selection.model !== 'string' || selection.model.length > 200) throw new Error('Choose a valid architect harness and model.');
+    if (!selection || !['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'omp', 'github-copilot'].includes(selection.provider) || typeof selection.model !== 'string' || selection.model.length > 200) throw new Error('Choose a valid architect harness and model.');
     const models = host.models(selection.provider);
     const model = selection.model ? models.find(model => model.id === selection.model) : models[0];
     if (selection.reasoningEffort != null && (typeof selection.reasoningEffort !== 'string' || selection.reasoningEffort.length > 32 || model && !model.reasoningEfforts?.some(effort => effort.id === selection.reasoningEffort))) throw new Error('This architect model does not support that reasoning effort.');
@@ -63,7 +63,7 @@ export function createPreviewArchitect(host: PreviewHost) {
       if (!profile || typeof profile.id !== 'string' || !profile.id.trim() || profile.id.length > 100 || ids.has(profile.id)) throw new Error('Worker profile IDs must be unique.');
       ids.add(profile.id);
       if (typeof profile.name !== 'string' || !profile.name.trim() || profile.name.length > 80) throw new Error('Worker names must be 1–80 characters.');
-      if (!['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'omp'].includes(profile.provider) || typeof profile.model !== 'string' || profile.model.length > 200) throw new Error('Choose a valid worker harness and model.');
+      if (!['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'omp', 'github-copilot'].includes(profile.provider) || typeof profile.model !== 'string' || profile.model.length > 200) throw new Error('Choose a valid worker harness and model.');
       const models = host.models(profile.provider);
       const model = profile.model ? models.find(model => model.id === profile.model) : models[0];
       if (profile.reasoningEffort != null && (typeof profile.reasoningEffort !== 'string' || profile.reasoningEffort.length > 32 || model && !model.reasoningEfforts?.some(effort => effort.id === profile.reasoningEffort))) throw new Error('This worker model does not support that reasoning effort.');
@@ -115,6 +115,13 @@ export function createPreviewArchitect(host: PreviewHost) {
     }
   } catch { /* Corrupt or inaccessible preview storage starts with a disabled default. */ }
   function profiles(): TeamLibrary { return structuredClone(library); }
+  function setLeadGuidance(guidance: unknown): TeamLibrary {
+    const text = typeof guidance === 'string' ? guidance.trim() : '';
+    if (new TextEncoder().encode(text).length > 2000 || text.includes('\0')) throw new Error('Lead guidance must be under 2000 bytes.');
+    library = { ...library, leadGuidance: text || undefined };
+    persistLibrary();
+    return profiles();
+  }
   function saveProfile(id: unknown, name: unknown, setup: TeamSetup): TeamLibrary {
     const checkedName = profileName(name), checked = validateSetup(setup);
     const existing = id == null ? undefined : library.profiles.find(profile => profile.id === id);
@@ -364,5 +371,5 @@ export function createPreviewArchitect(host: PreviewHost) {
     }
     persist();
   }
-  return { get, configure, profiles, saveProfile, deleteProfile, inherit, start, control, workerMessages, teamMessages, remove, isActive: (sessionId: string) => active(teams.get(sessionId)) };
+  return { get, configure, profiles, setLeadGuidance, saveProfile, deleteProfile, inherit, start, control, workerMessages, teamMessages, remove, isActive: (sessionId: string) => active(teams.get(sessionId)) };
 }
