@@ -8,7 +8,8 @@ import { isPreviewableFile } from './file-links';
 import type { OfficeKind } from './office-viewer';
 
 type Context = { projectId: string; sessionId?: string };
-type Tab = { path: string; context: Context; content?: string | ArrayBuffer; reads?: number };
+/** `source` shows a viewer-handled file (e.g. an SVG) as text. */
+type Tab = { path: string; context: Context; content?: string | ArrayBuffer; reads?: number; source?: boolean };
 /** PDF, Word, spreadsheet and image files arrive as bytes and draw in their own lazily loaded viewer. */
 const officeKind = (path: string): OfficeKind | undefined =>
   /\.pdf$/i.test(path) ? 'pdf' : /\.docx$/i.test(path) ? 'docx' : /\.(?:xlsx|xlsm|xls|ods)$/i.test(path) ? 'sheet' : /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(path) ? 'image' : undefined;
@@ -97,7 +98,7 @@ export function createFileTabs(deps: Deps) {
   async function load(tab: Tab): Promise<void> {
     const read = tab.reads = (tab.reads ?? 0) + 1;
     try {
-      const content = officeKind(tab.path)
+      const content = officeKind(tab.path) && !tab.source
         ? await deps.call<ArrayBuffer>('read_document_file', { ...tab.context, path: tab.path })
         : await deps.call<string>('read_file', { ...tab.context, path: tab.path });
       // An older reply arriving after a newer one must not put stale text back.
@@ -167,15 +168,18 @@ export function createFileTabs(deps: Deps) {
       render();
       const tab = current(); if (tab) void load(tab);
     },
-    open(path: string, context: Context): void {
+    open(path: string, context: Context, source = false): void {
       let entry = thread();
       if (!entry) { entry = { workspace, tabs: [], active: '' }; threads.set(key, entry); }
-      if (!entry.tabs.some(tab => tab.path === path)) entry.tabs = [...entry.tabs, { path, context: { ...context } }];
+      const fresh: Tab = { path, context: { ...context }, ...(source ? { source } : {}) };
+      const existing = entry.tabs.find(tab => tab.path === path);
+      if (!existing) entry.tabs = [...entry.tabs, fresh];
+      else if (Boolean(existing.source) !== source) entry.tabs = entry.tabs.map(tab => tab === existing ? fresh : tab);
       activate(path);
     },
     /** Re-reads the file on screen, e.g. after an agent run may have changed it. */
     // Documents can be tens of megabytes, so they are re-read only when their tab is opened again.
-    reload(): void { const tab = current(); if (tab && !officeKind(tab.path)) void load(tab); },
+    reload(): void { const tab = current(); if (tab && (tab.source || !officeKind(tab.path))) void load(tab); },
     showConversation(): void { if (thread()?.active) activate(''); },
     forget(id: string): void { threads.delete(id); if (id === key) render(); },
     get active(): string { return thread()?.active ?? ''; },

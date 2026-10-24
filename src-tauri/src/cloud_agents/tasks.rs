@@ -83,7 +83,7 @@ fn ensure_machine(app: &tauri::AppHandle, sid: &str, sandbox: &dyn Sandbox, stat
     }
     stage(app, sid, "creating", Some(&format!("Creating a {} machine…", label(&state.provider))));
     let machine = sandbox.create(&format!("pc-{}", sid.chars().take(8).collect::<String>()))?;
-    let native = crate::cloud::split(&machine.id).map(|(_, native)| native.to_owned()).or_else(|| machine.id.split_once(':').map(|(_, n)| n.to_owned())).unwrap_or_else(|| machine.id.clone());
+    let native = crate::cloud::split(&machine.id).map(|(_, native)| native.to_owned()).ok_or("The cloud provider returned a machine ID PandaCode cannot use.")?;
     update(app, sid, |state| {
         state.machine = Some(format!("{}:{native}", state.provider));
         state.remote_dir = None;

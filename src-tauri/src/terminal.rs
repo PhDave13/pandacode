@@ -356,6 +356,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 "plan" => "plan",
                 "full" => "bypassPermissions",
                 "auto" => "acceptEdits",
+                "review" => "auto",
                 _ => "default",
             };
             args.extend(["--permission-mode".into(), mode.into()]);
@@ -1101,6 +1102,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(mimo, ["--permission-mode", "acceptEdits", "--model", "mimo-v2.6-pro"]);
+        // Approve for me is Claude Code's auto mode, as in task runs.
+        for provider in ["claude", "glm", "mimo"] {
+            let review = harness_arguments(&HarnessContext { provider, mode: "review", ..context }).unwrap();
+            assert!(review.windows(2).any(|args| args == ["--permission-mode", "auto"]), "{provider}");
+        }
     }
 
     struct TestShell {

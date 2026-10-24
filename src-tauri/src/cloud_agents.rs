@@ -41,7 +41,7 @@ pub(crate) struct State {
 
 impl State {
     pub(crate) fn native(&self) -> Option<&str> {
-        self.machine.as_deref().and_then(|id| id.split_once(':')).map(|(_, native)| native)
+        self.machine.as_deref().and_then(crate::cloud::split).map(|(_, native)| native)
     }
     /// A run that was started and has not been finalized: its output may still need saving
     /// or its changes pulling (whatever the stage, e.g. `syncing` when PandaCode quit).

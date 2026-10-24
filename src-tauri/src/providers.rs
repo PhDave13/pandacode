@@ -54,6 +54,7 @@ mod kimi_stream_tests;
 #[cfg(test)]
 mod slash_command_tests;
 mod limits;
+mod plan_reads;
 mod steering;
 mod subagents;
 mod text_stream;
@@ -90,29 +91,12 @@ pub(crate) const PROVIDERS: [(&str, &str); 16] = [
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
 
-/// Claude tools that only read, which Plan mode runs without asking even outside
-/// the project. Credential-looking paths still go to the user.
-const CLAUDE_READ_ONLY_TOOLS: &[&str] = &["Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch"];
-const CREDENTIAL_PATHS: &[&str] = &[".ssh", ".aws", ".gnupg", ".netrc", ".npmrc", ".pypirc", ".docker/config", ".kube", ".config/gh", ".git-credentials", ".env", "id_rsa", "id_ed25519", ".pem", ".key", "keychain", "credentials", "secrets", "ai.pandacode"];
-
 /// Never runs an agent-reviewed task under some other policy.
 fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
     if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo") {
         return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
     }
     Ok(())
-}
-
-fn plan_read_only(tool: &str, input: &Value) -> bool {
-    if !CLAUDE_READ_ONLY_TOOLS.contains(&tool) {
-        return false;
-    }
-    // Grep's `pattern` is a regex over contents; Glob's is a path.
-    let paths: &[&str] = if tool == "Glob" { &["path", "pattern"] } else { &["file_path", "path", "notebook_path"] };
-    !paths.iter().filter_map(|key| input[key].as_str()).any(|path| {
-        let path = path.to_lowercase();
-        CREDENTIAL_PATHS.iter().any(|needle| path.contains(needle))
-    })
 }
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
@@ -2464,7 +2448,7 @@ impl Protocol {
                         // touch that bot's memory, schedules and messages to its owner.
                         // Team tools only exist in team turns and only change team state.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
-                    } else if self.config.mode == "plan" && plan_read_only(&name, &value["request"]["input"]) {
+                    } else if self.config.mode == "plan" && plan_reads::plan_read_only(&name, &value["request"]["input"], &self.config.cwd) {
                         // Plan mode investigates: reads and web lookups anywhere run;
                         // Claude's own deny rules were applied before it asked.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
@@ -3321,7 +3305,7 @@ mod tests {
         for provider in ["claude", "glm", "mimo"] {
             assert!(review_supported(provider, "review").is_ok());
         }
-        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "github-copilot", "muse"] {
+        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse"] {
             assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
             assert!(review_supported(provider, "ask").is_ok());
         }

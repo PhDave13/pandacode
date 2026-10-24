@@ -166,6 +166,30 @@ fn same_name_skills_from_different_sources_are_shown_and_never_overwritten() {
 }
 
 #[test]
+fn an_import_that_lands_while_another_fetches_is_never_overwritten() {
+    let fx = Fixture::new();
+    let mut fake = Fake::default();
+    fake.repo("you/two", "t1", &files(&[("pdf/SKILL.md", &skill("PDF")), ("pdf/b.md", "theirs")]));
+    fx.library.add_catalog(&fake.api(), "you/two", None).unwrap();
+    // The id is free when the import checks; another source takes it during the fetch.
+    let raced = std::cell::Cell::new(false);
+    let api = |endpoint: &str| {
+        if endpoint.contains("/git/blobs/") && !raced.replace(true) {
+            let mine = vec![("SKILL.md".to_string(), skill("PDF").into_bytes()), ("a.md".to_string(), b"mine".to_vec())];
+            fx.library.import(Kind::Skill, mine, "pdf", Source { kind: "folder".into(), location: "/me/pdf".into(), git_ref: None, commit: None }).unwrap();
+        }
+        fake.call(endpoint)
+    };
+    let result = fx.library.import_catalog(&api, "you/two", None).unwrap();
+    assert!(raced.get());
+    assert!(result.imported.is_empty());
+    assert!(result.skipped[0].reason.contains("already in the library from /me/pdf"), "{:?}", result.skipped);
+    let pdf = result.items.iter().find(|i| i.meta.id == "pdf").unwrap();
+    assert_eq!(pdf.meta.source.location, "/me/pdf");
+    assert!(pdf.files.contains(&"a.md".to_string()));
+}
+
+#[test]
 fn refresh_records_upstream_changes_without_touching_the_library() {
     let fx = Fixture::new();
     let mut fake = Fake::default();

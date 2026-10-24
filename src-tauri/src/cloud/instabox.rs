@@ -60,6 +60,12 @@ fn machine(vm: &Value) -> Machine {
     }
 }
 
+/// InstaBox machine IDs go into URL paths, so only plain IDs are accepted.
+fn valid_id(id: &str) -> Result<&str> {
+    let plain = (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    plain.then_some(id).ok_or_else(|| "Unknown InstaBox machine.".into())
+}
+
 /// Prints `<exit code> <output bytes>`, then the output itself (and cleans up) when it fits.
 fn report(file: &str) -> String {
     format!("s=$(wc -c <{file}.out | tr -d ' '); echo \"$(cat {file}.code) $s\"; if [ \"$s\" -le {INLINE} ]; then cat {file}.out; rm -f {file}.*; fi")
@@ -95,6 +101,7 @@ impl InstaBox {
         }
     }
     async fn get(&self, id: &str) -> Result<Value> {
+        let id = valid_id(id)?;
         self.call(reqwest::Method::GET, &format!("/machines/{id}"), None, Duration::from_secs(30)).await
     }
     async fn list(&self) -> Result<Vec<Machine>> {
@@ -119,13 +126,20 @@ impl InstaBox {
         let id = done["machineId"].as_str().map(str::to_string).or(id).ok_or("InstaBox did not return a machine ID.")?;
         Ok(machine(&self.get(&id).await?))
     }
+    /// The machine, only when PandaCode created it.
+    async fn owned(&self, id: &str) -> Result<Value> {
+        let vm = self.get(id).await?;
+        if vm["metadata"][LABEL.0] != LABEL.1 {
+            return Err("PandaCode only controls InstaBox machines it created.".into());
+        }
+        Ok(vm)
+    }
     async fn power(&self, id: &str, action: &str) -> Result<()> {
         let timeout = Duration::from_secs(60);
-        let state = match action {
-            "start" | "stop" => self.get(id).await?["state"].as_str().unwrap_or_default().to_string(),
-            "delete" => String::new(),
-            _ => return Err(format!("InstaBox machines can start, stop or be deleted, not {action}.")),
-        };
+        if !matches!(action, "start" | "stop" | "delete") {
+            return Err(format!("InstaBox machines can start, stop or be deleted, not {action}."));
+        }
+        let state = self.owned(id).await?["state"].as_str().unwrap_or_default().to_string();
         let operation = match (action, state.as_str()) {
             ("start", "suspended") => self.call(reqwest::Method::POST, &format!("/machines/{id}/resume"), Some(json!({})), timeout).await?,
             ("start", "stopped") => self.call(reqwest::Method::POST, &format!("/machines/{id}/start"), Some(json!({})), timeout).await?,
@@ -136,6 +150,7 @@ impl InstaBox {
         if operation.is_null() { Ok(()) } else { self.settle(operation).await.map(|_| ()) }
     }
     async fn keep_alive(&self, id: &str, minutes: u32) -> Result<()> {
+        self.owned(id).await?;
         let seconds = u64::from(minutes.max(1)) * 60;
         let patched = self.call(reqwest::Method::PATCH, &format!("/machines/{id}"), Some(json!({"autoSuspendAfterSeconds": seconds})), Duration::from_secs(30)).await;
         if patched.is_ok() {
@@ -155,6 +170,7 @@ impl InstaBox {
         Ok((result["timedOut"].as_bool() != Some(true)).then(|| result["stdout"].as_str().unwrap_or_default().to_string()))
     }
     async fn exec(&self, id: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)> {
+        self.owned(id).await?;
         let file = format!("/tmp/pandacode-exec-{}", uuid::Uuid::new_v4().simple());
         let seconds = timeout.as_secs().max(1);
         // The command arrives on stdin, so it needs no quoting and stays within the 64 KiB `cmd`.
@@ -289,7 +305,9 @@ mod tests {
                 ("GET", "/v1/operations/op_1") if operations.fetch_add(1, Ordering::SeqCst) == 0 => text(r#"{"id":"op_1","machineId":"m_3","state":"running"}"#),
                 ("GET", "/v1/operations/op_1") => text(r#"{"id":"op_1","machineId":"m_3","state":"succeeded"}"#),
                 ("GET", "/v1/machines/m_3") => text(r#"{"id":"m_3","name":"pc-new","state":"running","runtime":{"ready":false}}"#),
-                ("GET", "/v1/machines/m_2") => text(r#"{"id":"m_2","state":"suspended"}"#),
+                ("GET", "/v1/machines/m_2") => text(r#"{"id":"m_2","state":"suspended","metadata":{"created-by":"pandacode"}}"#),
+                ("GET", "/v1/machines/m_1") => text(r#"{"id":"m_1","state":"running","metadata":{"created-by":"pandacode"}}"#),
+                ("GET", "/v1/machines/m_9") => text(r#"{"id":"m_9","state":"running","metadata":{}}"#),
                 ("POST", "/v1/machines/m_2/resume") => (202, br#"{"id":"op_2","state":"succeeded"}"#.to_vec()),
                 ("DELETE", "/v1/machines/m_2") => (202, br#"{"id":"op_3","type":"delete","state":"failed","error":{"message":"busy"}}"#.to_vec()),
                 ("PATCH", "/v1/machines/m_1") => (403, br#"{"error":{"code":"plan","message":"not on this plan"}}"#.to_vec()),
@@ -345,7 +363,7 @@ mod tests {
         assert!(checked((code, output)).unwrap_err().contains("error: boom"));
         assert_eq!(instabox.exec("m_1", "sleep", Duration::from_secs(5)).await.unwrap().0, None);
         let log = seen.lock().unwrap();
-        let bodies: Vec<Value> = log.iter().map(|r| serde_json::from_str(&r.body).unwrap()).collect();
+        let bodies: Vec<Value> = log.iter().filter(|r| r.method == "POST").map(|r| serde_json::from_str(&r.body).unwrap()).collect();
         let pieces: Vec<&Value> = bodies.iter().filter(|b| b["cmd"].as_str().unwrap().contains("tail -c +")).collect();
         assert_eq!(pieces.len(), big().len().div_ceil(PIECE));
         assert!(pieces.iter().all(|b| b["cmd"].as_str().unwrap().contains(&format!("head -c {PIECE}"))));
@@ -360,6 +378,22 @@ mod tests {
         assert_eq!(instabox.exec("m_1", "build", Duration::from_secs(1800)).await.unwrap(), (Some(0), "long".into()));
         let log = seen.lock().unwrap();
         assert_eq!(log.iter().filter(|r| r.body.contains("[ -f")).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn refuses_unlabelled_machines_and_unsafe_ids() {
+        let (instabox, seen) = instabox();
+        for action in ["start", "stop", "delete"] {
+            assert!(instabox.power("m_9", action).await.unwrap_err().contains("it created"), "{action}");
+        }
+        assert!(instabox.exec("m_9", "ls", Duration::from_secs(30)).await.unwrap_err().contains("it created"));
+        assert!(instabox.keep_alive("m_9", 30).await.unwrap_err().contains("it created"));
+        for id in ["m_1/exec", "m_1?x", "m_1#x", "..", "../operations/op_1", "", &"a".repeat(129)] {
+            assert_eq!(instabox.exec(id, "ls", Duration::from_secs(30)).await.unwrap_err(), "Unknown InstaBox machine.", "{id}");
+            assert!(instabox.power(id, "delete").await.is_err(), "{id}");
+        }
+        let log = seen.lock().unwrap();
+        assert!(log.iter().all(|r| r.method == "GET" && r.path == "/v1/machines/m_9"), "nothing else was sent");
     }
 
     #[test]

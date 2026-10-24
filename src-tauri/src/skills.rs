@@ -295,6 +295,12 @@ impl Library {
     /// Add or update an item. Updating keeps activations; they show as outdated until the
     /// user activates again, so a new version never reaches a harness without them.
     pub fn import(&self, kind: Kind, files: Files, fallback_name: &str, source: Source) -> Result<Item, String> {
+        self.import_as(kind, files, fallback_name, source, false)
+    }
+
+    /// `import`, refusing (under the library lock, so a concurrent import cannot slip in
+    /// between a check and the write) to replace an item that came from another source.
+    pub(crate) fn import_as(&self, kind: Kind, files: Files, fallback_name: &str, source: Source, same_source_only: bool) -> Result<Item, String> {
         let files = normalize(kind, files)?;
         let main = files.iter().find(|(p, _)| p == main_file(kind)).map(|(_, b)| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
         let (name, description, body) = frontmatter(&main);
@@ -309,6 +315,9 @@ impl Library {
         let previous = self.load(&id).ok();
         if previous.as_ref().is_some_and(|p| p.kind != kind) {
             return Err(format!("A {} named {id} is already in the library.", if kind == Kind::Skill { "rule" } else { "skill" }));
+        }
+        if let Some(taken) = previous.as_ref().filter(|p| same_source_only && !p.source.location.eq_ignore_ascii_case(&source.location)) {
+            return Err(format!("{id} is already in the library from {}.", taken.source.location));
         }
         let folder = self.dir.join(&id);
         let _ = fs::remove_dir_all(&folder);

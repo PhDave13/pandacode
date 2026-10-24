@@ -72,6 +72,13 @@ test.describe('browser workspace', () => {
     expect((await commandCalls(page, 'read_file')).some(call => call.args.path === 'public/favicon.svg')).toBe(false);
     await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect(browserUrl(page)).toHaveValue(/\/public\/favicon\.svg$/);
+    // View source shows the SVG's text, not the image.
+    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('button', { name: 'View source of favicon.svg', exact: true }).click();
+    await expect(page.locator('.file-view-path')).toHaveText('public/favicon.svg');
+    await expect(page.locator('.office-viewer[data-kind="image"]')).toHaveCount(0);
+    await expect.poll(async () => (await commandCalls(page, 'read_file')).some(call => call.args.path === 'public/favicon.svg')).toBe(true);
+    await expect(page.locator('.file-view-body')).toContainText('<svg');
   });
 
   test('file preview errors keep the file list usable', async ({ page }) => {

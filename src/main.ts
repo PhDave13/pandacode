@@ -2723,7 +2723,7 @@ const INSPECTOR_TITLES: Record<typeof state.inspectorTab, string> = { files: 'Fi
 function fileTree(files: FileEntry[], depth: number): string {
   return files.map(file => {
     const open = file.isDir && state.openFolders.has(file.path), path = escape(file.path);
-    const row = `<div class="file-row" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : isPreviewableFile(file.path) && !OPENS_IN_TAB.test(file.path) ? 'preview-file' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.(html?|svg)$/i.test(file.path) ? button('open-file', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}</div>`;
+    const row = `<div class="file-row" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : isPreviewableFile(file.path) && !OPENS_IN_TAB.test(file.path) ? 'preview-file' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.(html?|svg)$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}</div>`;
     return row + (open ? fileTree(state.folderFiles.get(file.path) ?? [], depth + 1) : '');
   }).join('');
 }
@@ -2840,14 +2840,14 @@ async function previewFile(path: string, context = workspaceContext(), active?: 
   if (!browserPanel) throw new Error('Browser could not be opened.');
   await browserPanel.navigate(file.url);
 }
-async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext()): Promise<void> {
+async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false): Promise<void> {
   const p = project(); if (!p) return;
   // Files open as tabs in their task's conversation; from the board that is the task panel beside it.
   if (kind === 'file') {
     if (context.sessionId && context.sessionId !== state.sessionId) await selectSession(context.sessionId);
     if (context.sessionId && context.sessionId !== state.sessionId) return;
     if (state.view !== 'conversation' && !state.boardPanel) setWorkspaceView('conversation');
-    fileTabs.open(path, context); return;
+    fileTabs.open(path, context, source); return;
   }
   const request = ++fileRequest, generation = state.generation; const content = await call<string>('git_diff', { ...context, path, staged }); if (request !== fileRequest || p.id !== state.projectId || generation !== state.generation) return;
   selectedFileContext = { ...context };
@@ -3943,6 +3943,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'preview-file': await previewFile(element.dataset.path!); break;
     case 'preview-selected-file': await previewFile(state.selectedFile, selectedFileContext); break;
     case 'open-file': await openFile(element.dataset.path!, 'file'); break;
+    case 'view-source': await openFile(element.dataset.path!, 'file', false, workspaceContext(), true); break;
     case 'open-diff': await openFile(element.dataset.path!, 'diff', element.dataset.staged === 'true'); break;
     case 'back-inspector': state.selectedKind = ''; renderInspector(); break;
     case 'attach': await attachments.openMenu(element); break;

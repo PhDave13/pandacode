@@ -416,7 +416,8 @@ impl Library {
                 fetched.push((relative, blob(api, &source.repo, &file.sha).map_err(|e| explain(&e))?));
             }
             let origin = Source { kind: "github".into(), location: here, git_ref: source.git_ref.clone(), commit: Some(commit.clone()) };
-            match self.import(Kind::Skill, fetched, &skill.name, origin) {
+            // Checked again at commit: another import may have taken the id while this one fetched.
+            match self.import_as(Kind::Skill, fetched, &skill.name, origin, true) {
                 Ok(item) => imported.push(item.meta.name),
                 Err(reason) => skipped.push(skip(reason)),
             }
