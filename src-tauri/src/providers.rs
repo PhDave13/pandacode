@@ -88,6 +88,31 @@ const PROVIDERS: [(&str, &str); 15] = [
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
 
+/// Claude tools that only read, which Plan mode runs without asking even outside
+/// the project. Credential-looking paths still go to the user.
+const CLAUDE_READ_ONLY_TOOLS: &[&str] = &["Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch"];
+const CREDENTIAL_PATHS: &[&str] = &[".ssh", ".aws", ".gnupg", ".netrc", ".npmrc", ".pypirc", ".docker/config", ".kube", ".config/gh", ".git-credentials", ".env", "id_rsa", "id_ed25519", ".pem", ".key", "keychain", "credentials", "secrets", "ai.pandacode"];
+
+/// Never runs an agent-reviewed task under some other policy.
+fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
+    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo") {
+        return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
+    }
+    Ok(())
+}
+
+fn plan_read_only(tool: &str, input: &Value) -> bool {
+    if !CLAUDE_READ_ONLY_TOOLS.contains(&tool) {
+        return false;
+    }
+    // Grep's `pattern` is a regex over contents; Glob's is a path.
+    let paths: &[&str] = if tool == "Glob" { &["path", "pattern"] } else { &["file_path", "path", "notebook_path"] };
+    !paths.iter().filter_map(|key| input[key].as_str()).any(|path| {
+        let path = path.to_lowercase();
+        CREDENTIAL_PATHS.iter().any(|needle| path.contains(needle))
+    })
+}
+
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
 pub fn takes_system_instructions(provider: &str) -> bool {
     matches!(provider, "claude" | "glm" | "mimo" | "pi" | "omp")
@@ -2436,6 +2461,10 @@ impl Protocol {
                         // touch that bot's memory, schedules and messages to its owner.
                         // Team tools only exist in team turns and only change team state.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
+                    } else if self.config.mode == "plan" && plan_read_only(&name, &value["request"]["input"]) {
+                        // Plan mode investigates: reads and web lookups anywhere run;
+                        // Claude's own deny rules were applied before it asked.
+                        step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
                     } else {
                         self.approval(
                             value,
@@ -2699,6 +2728,8 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             ]);
             let permission_mode = match config.mode.as_str() {
                 "auto" => "acceptEdits",
+                // Claude Code's auto mode: its safety reviewer approves routine actions.
+                "review" => "auto",
                 "plan" => "plan",
                 "full" => "bypassPermissions",
                 _ => "default",
@@ -2762,6 +2793,7 @@ async fn run_inner(
     if !crate::storage::valid_permission_mode(&config.mode) {
         return Err("Unknown permission mode".into());
     }
+    review_supported(&config.provider, &config.mode)?;
     validate_reasoning_effort(&config.provider, config.reasoning_effort.as_deref())?;
     // A cloud task runs the same pipeline through a bridge to its machine; local MCP host
     // tools stay on this computer (docs/cloud-agents.md, step 5).
@@ -3266,6 +3298,49 @@ mod tests {
     }
 
     #[test]
+    fn approve_for_me_runs_only_where_the_harness_reviews_actions() {
+        for provider in ["claude", "glm", "mimo"] {
+            assert!(review_supported(provider, "review").is_ok());
+        }
+        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "github-copilot", "muse"] {
+            assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
+            assert!(review_supported(provider, "ask").is_ok());
+        }
+    }
+
+    #[test]
+    fn claude_plan_mode_runs_reads_and_web_lookups_but_asks_for_the_rest() {
+        let permission = |mode: &str, name: &str, input: Value| {
+            let mut cfg = config("claude");
+            cfg.mode = mode.into();
+            let mut p = Protocol::new(cfg);
+            let step = p.receive(json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":name,"input":input}})).unwrap();
+            step.write.first().map(|w| w["response"]["response"]["behavior"].clone())
+        };
+        for (name, input) in [
+            ("Read", json!({"file_path":"/Users/me/other-repo/README.md"})),
+            ("Grep", json!({"pattern":"token","path":"/opt/lib"})),
+            ("Glob", json!({"pattern":"**/*.md","path":"/Users/me/docs"})),
+            ("WebFetch", json!({"url":"https://docs.example.com","prompt":"summary"})),
+            ("WebSearch", json!({"query":"tauri updater"})),
+        ] {
+            assert_eq!(permission("plan", name, input.clone()), Some(json!("allow")), "{name}");
+            assert_eq!(permission("ask", name, input), None, "{name} keeps Standard approvals");
+        }
+        // Credentials and anything that changes state still go to the user.
+        for (name, input) in [
+            ("Read", json!({"file_path":"/Users/me/.ssh/id_ed25519"})),
+            ("Read", json!({"file_path":"/Users/me/project/.env"})),
+            ("Glob", json!({"pattern":"/Users/me/.aws/*"})),
+            ("Write", json!({"file_path":"/tmp/a.txt","content":"x"})),
+            ("Edit", json!({"file_path":"/tmp/a.txt"})),
+            ("Bash", json!({"command":"cat README.md"})),
+        ] {
+            assert_eq!(permission("plan", name, input), None, "{name}");
+        }
+    }
+
+    #[test]
     fn claude_preview_tools_never_inherit_the_metadata_permission_exemption() {
         for provider in ["claude", "glm", "mimo"] {
             for mode in ["ask", "auto", "plan"] {
@@ -3677,6 +3752,7 @@ mod tests {
             for (mode, expected) in [
                 ("ask", "default"),
                 ("auto", "acceptEdits"),
+                ("review", "auto"),
                 ("plan", "plan"),
                 ("full", "bypassPermissions"),
             ] {

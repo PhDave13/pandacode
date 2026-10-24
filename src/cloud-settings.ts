@@ -24,6 +24,7 @@ const KEYED = {
   tensorlake: { name: 'Tensorlake', key: 'API key', docs: 'cloud.tensorlake.ai → API keys', fields: [] },
   freestyle: { name: 'Freestyle', key: 'API key', docs: 'admin.freestyle.sh → API keys', fields: [] },
   boat: { name: 'boat', key: 'API key', docs: 'your boat dashboard', fields: [{ name: 'apiUrl', label: 'API URL', placeholder: 'Optional', optional: true }] },
+  instabox: { name: 'InstaBox', key: 'API key', docs: 'instabox.sh → API keys', fields: [] },
 } satisfies Record<string, { name: string; key: string; docs: string; fields: Field[] }>;
 type KeyedProvider = keyof typeof KEYED;
 const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: string; key?: Field; fields: Field[]; note: string; connect: string }> = {

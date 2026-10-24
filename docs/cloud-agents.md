@@ -4,7 +4,7 @@ A task can run its agent on a cloud machine instead of this computer. In a New t
 context bar's computer menu ("This computer", other Connect computers) also lists
 **Cloud** targets: every provider connected in Settings → Cloud (Daytona, Cloudflare,
 AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel,
-Tensorlake, Freestyle, Railway, boat). Picking one and sending starts the task there. The
+Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and sending starts the task there. The
 task then reads like any other task: streaming transcript, approvals, questions, steering,
 queue, model picker. It keeps running when the laptop sleeps or PandaCode quits, and
 catches up when it comes back.
@@ -95,6 +95,7 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | tensorlake | API key | — |
 | freestyle | API key | — |
 | boat | API key | `apiUrl` |
+| instabox | API key | — (machines from the `agent-browser` template; `exec` output is read back from a file because InstaBox keeps only its first 1 MiB; at most 30 unattended minutes) |
 | vercel | (existing deploy token) | `projectId` and `teamId` for Sandbox, saved in `Settings.providers["vercel"]` |
 | railway | (existing deploy token) | `workspace` (existing) |
 | gcloud | (gcloud CLI login) | `zone` for Compute Engine VMs, saved in `Settings.providers["gcloud"]` |

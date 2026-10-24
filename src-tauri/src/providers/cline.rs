@@ -27,11 +27,12 @@ pub(super) fn image_reference(path: &Path) -> String {
 }
 
 /// Cline asks before every tool, even reads. Reads and searches are answered
-/// here as Standard mode would; Plan declines changes to files. `None` leaves
+/// here as Standard mode would; Plan also allows fetches and declines changes to files. `None` leaves
 /// the request to the shared approval path.
 pub(super) fn permission(mode: &str, kind: &str) -> Option<&'static str> {
     match kind {
         "read" | "search" => Some("allow_once"),
+        "fetch" if mode == "plan" => Some("allow_once"),
         "edit" | "delete" | "move" if mode == "plan" => Some("reject_once"),
         _ => None,
     }
@@ -158,6 +159,8 @@ mod tests {
             ("ask", "read", Some(json!("allow_once"))),
             ("plan", "search", Some(json!("allow_once"))),
             ("plan", "edit", Some(json!("reject_once"))),
+            ("plan", "fetch", Some(json!("allow_once"))),
+            ("ask", "fetch", None),
             ("auto", "edit", Some(json!("allow_once"))),
             ("full", "execute", Some(json!("allow_once"))),
             ("ask", "edit", None),

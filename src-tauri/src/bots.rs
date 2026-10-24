@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS bots(
   role TEXT NOT NULL DEFAULT '',
   instructions TEXT NOT NULL DEFAULT '',
   goals TEXT NOT NULL DEFAULT '',
+  soul TEXT NOT NULL DEFAULT '',
   avatar TEXT NOT NULL DEFAULT '',
   project_id TEXT NOT NULL REFERENCES projects(id),
   provider TEXT NOT NULL,
@@ -39,7 +40,9 @@ CREATE TABLE IF NOT EXISTS bots(
   notify_channel_id TEXT,
   notify_thread TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL);
+  updated_at INTEGER NOT NULL,
+  skills TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(skills)),
+  mcp TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(mcp)));
 CREATE TABLE IF NOT EXISTS bot_memories(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -96,6 +99,10 @@ CREATE TABLE IF NOT EXISTS bot_pairings(
   code TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   PRIMARY KEY(channel_id,sender_id));
+CREATE TABLE IF NOT EXISTS bot_tasks(
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  brief_version INTEGER NOT NULL DEFAULT -1);
 CREATE TABLE IF NOT EXISTS bot_rules(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -105,6 +112,8 @@ CREATE TABLE IF NOT EXISTS bot_rules(
 ";
 
 const MAX_TEXT: usize = 16 * 1024;
+/// A soul.md larger than this is refused rather than cut short.
+pub(crate) const MAX_SOUL: usize = 64 * 1024;
 const MAX_MEMORIES: i64 = 500;
 pub(crate) const DESKTOP: &str = "desktop";
 
@@ -116,6 +125,8 @@ pub struct Bot {
     pub role: String,
     pub instructions: String,
     pub goals: String,
+    /// Optional personality Markdown (a soul.md copied in once); never grants tools or permissions.
+    pub soul: String,
     pub avatar: String,
     pub project_id: String,
     pub provider: String,
@@ -129,6 +140,10 @@ pub struct Bot {
     pub notify_thread: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Library skill ids, by reference (schema 29).
+    pub skills: Vec<String>,
+    /// MCP server names from the harness's own config, by reference; never their definitions.
+    pub mcp: Vec<String>,
 }
 
 /// Editable fields; workspace and timestamps are owned by native code.
@@ -139,6 +154,8 @@ pub struct BotInput {
     pub role: String,
     pub instructions: String,
     pub goals: String,
+    /// Optional personality Markdown (a soul.md copied in once); never grants tools or permissions.
+    pub soul: String,
     pub avatar: String,
     pub provider: String,
     pub model: String,
@@ -174,7 +191,7 @@ pub struct Thread {
     pub updated_at: i64,
 }
 
-const BOT_COLUMNS: &str = "id,name,role,instructions,goals,avatar,project_id,provider,model,mode,heartbeat_minutes,next_heartbeat_at,paused,memory_version,notify_channel_id,notify_thread,created_at,updated_at";
+const BOT_COLUMNS: &str = "id,name,role,instructions,goals,avatar,project_id,provider,model,mode,heartbeat_minutes,next_heartbeat_at,paused,memory_version,notify_channel_id,notify_thread,created_at,updated_at,soul,skills,mcp";
 
 fn bot_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Bot> {
     Ok(Bot {
@@ -196,6 +213,9 @@ fn bot_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Bot> {
         notify_thread: r.get(15)?,
         created_at: r.get(16)?,
         updated_at: r.get(17)?,
+        soul: r.get(18)?,
+        skills: serde_json::from_str(&r.get::<_, String>(19)?).unwrap_or_default(),
+        mcp: serde_json::from_str(&r.get::<_, String>(20)?).unwrap_or_default(),
     })
 }
 
@@ -234,11 +254,15 @@ fn validate(input: &BotInput) -> Result<BotInput> {
     if !(0..=7 * 24 * 60).contains(&input.heartbeat_minutes) {
         return Err("Check-ins run at most once a week and at least every minute.".into());
     }
+    if input.soul.len() > MAX_SOUL {
+        return Err("The personality is larger than 64 KB. Shorten it and try again.".into());
+    }
     Ok(BotInput {
         name,
         role: clean(&input.role, 200),
         instructions: clean(&input.instructions, MAX_TEXT),
         goals: clean(&input.goals, MAX_TEXT),
+        soul: clean(&input.soul, MAX_SOUL),
         avatar: avatar(&input.avatar),
         provider: input.provider.clone(),
         model: input.model.clone(),
@@ -274,6 +298,95 @@ mod avatar_tests {
         assert_eq!(avatar(&format!("data:image/png;base64,{}", "A".repeat(300_000))), "data");
         assert_eq!(avatar("🐼🐼🐼🐼🐼"), "🐼🐼🐼🐼");
     }
+}
+
+/// Adds the `soul` column to a bots table created before it existed (schema 28). Idempotent.
+pub(crate) fn migrate_soul(db: &rusqlite::Connection) -> Result<()> {
+    let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name='soul')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if !exists {
+        db.execute_batch("ALTER TABLE bots ADD COLUMN soul TEXT NOT NULL DEFAULT '';").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Adds bot skill and MCP references and the task-to-bot links (schema 29). Idempotent.
+pub(crate) fn migrate_capabilities(db: &rusqlite::Connection) -> Result<()> {
+    for column in ["skills", "mcp"] {
+        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name=?1)", [column], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if !exists {
+            db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]' CHECK(json_valid({column}));")).map_err(|e| e.to_string())?;
+        }
+    }
+    db.execute_batch(SCHEMA).map_err(|e| e.to_string())
+}
+
+const MAX_REFERENCES: usize = 50;
+
+/// Distinct, bounded references: skill ids are library slugs, MCP names short labels.
+fn references(values: &[String], skill: bool) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values.iter().map(|v| v.trim()) {
+        let ok = !value.is_empty()
+            && value.len() <= if skill { 64 } else { 100 }
+            && if skill { value.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-') } else { !value.chars().any(char::is_control) };
+        if !ok {
+            return Err(format!("{} is not a valid {} name.", value.chars().take(64).collect::<String>(), if skill { "skill" } else { "MCP server" }));
+        }
+        if !out.iter().any(|v| v == value) {
+            out.push(value.to_owned());
+        }
+    }
+    if out.len() > MAX_REFERENCES {
+        return Err(format!("A bot can reference up to {MAX_REFERENCES} skills and {MAX_REFERENCES} MCP servers."));
+    }
+    Ok(out)
+}
+
+/// Saves which library skills and configured MCP servers a bot uses. They are part of the brief.
+pub(crate) fn set_capabilities(store: &Store, id: &str, skills: &[String], mcp: &[String]) -> Result<Bot> {
+    let (skills, mcp) = (references(skills, true)?, references(mcp, false)?);
+    get(store, id)?;
+    store
+        .db
+        .execute(
+            "UPDATE bots SET skills=?2,mcp=?3,memory_version=memory_version+1,updated_at=?4 WHERE id=?1",
+            params![id, serde_json::to_string(&skills).map_err(|e| e.to_string())?, serde_json::to_string(&mcp).map_err(|e| e.to_string())?, crate::storage::now()],
+        )
+        .map_err(|e| e.to_string())?;
+    log(store, id, "updated", "Skills and MCP servers changed", json!({"skills": skills.len(), "mcp": mcp.len()}))?;
+    get(store, id)
+}
+
+/// Links an ordinary project task to a bot, or unlinks it with `None`. The task keeps its
+/// own project and checkout; bot workspaces and bot conversations cannot be linked.
+pub(crate) fn assign_task(store: &Store, session_id: &str, bot_id: Option<&str>) -> Result<Option<Bot>> {
+    let task = store.session(session_id)?;
+    if project_ids(store)?.contains(&task.project_id) {
+        return Err("A bot's own conversations already use that bot.".into());
+    }
+    let Some(bot_id) = bot_id else {
+        store.db.execute("DELETE FROM bot_tasks WHERE session_id=?1", [session_id]).map_err(|e| e.to_string())?;
+        return Ok(None);
+    };
+    let bot = get(store, bot_id)?;
+    store
+        .db
+        .execute("INSERT INTO bot_tasks(session_id,bot_id) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET bot_id=excluded.bot_id,brief_version=-1", params![session_id, bot_id])
+        .map_err(|e| e.to_string())?;
+    Ok(Some(bot))
+}
+
+/// The bot an ordinary task was started with, and the brief version that task has seen.
+pub(crate) fn task_bot(store: &Store, session_id: &str) -> Result<Option<(Bot, i64)>> {
+    let found: Option<(String, i64)> = store.db.query_row("SELECT bot_id,brief_version FROM bot_tasks WHERE session_id=?1", [session_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(|e| e.to_string())?;
+    found.map(|(bot, seen)| Ok((get(store, &bot)?, seen))).transpose()
+}
+
+/// Every task-to-bot link, for the window's context bar.
+pub(crate) fn task_links(store: &Store) -> Result<std::collections::HashMap<String, String>> {
+    let mut statement = store.db.prepare("SELECT session_id,bot_id FROM bot_tasks").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
 
 /// Folder name for a bot workspace: readable, unique per bot.
@@ -315,8 +428,8 @@ pub(crate) fn create(store: &Store, input: &BotInput, root: &std::path::Path) ->
     store
         .db
         .execute(
-            "INSERT INTO bots(id,name,role,instructions,goals,avatar,project_id,provider,model,mode,heartbeat_minutes,next_heartbeat_at,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13)",
-            params![id, input.name, input.role, input.instructions, input.goals, input.avatar, project.id, input.provider, input.model, input.mode, input.heartbeat_minutes, schedule::heartbeat_after(input.heartbeat_minutes, now), now],
+            "INSERT INTO bots(id,name,role,instructions,goals,avatar,project_id,provider,model,mode,heartbeat_minutes,next_heartbeat_at,created_at,updated_at,soul) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13,?14)",
+            params![id, input.name, input.role, input.instructions, input.goals, input.avatar, project.id, input.provider, input.model, input.mode, input.heartbeat_minutes, schedule::heartbeat_after(input.heartbeat_minutes, now), now, input.soul],
         )
         .map_err(|e| e.to_string())?;
     log(store, &id, "created", &format!("Created {}", input.name), json!({}))?;
@@ -328,13 +441,13 @@ pub(crate) fn update(store: &Store, id: &str, input: &BotInput) -> Result<Bot> {
     let before = get(store, id)?;
     let now = crate::storage::now();
     let next = if before.heartbeat_minutes == input.heartbeat_minutes { before.next_heartbeat_at } else { schedule::heartbeat_after(input.heartbeat_minutes, now) };
-    // Instructions and goals are part of the brief; bump the version so open threads get them.
-    let brief_changed = before.instructions != input.instructions || before.goals != input.goals || before.role != input.role || before.name != input.name;
+    // Identity, instructions, goals and soul are part of the brief; bump the version so open threads get them.
+    let brief_changed = before.instructions != input.instructions || before.goals != input.goals || before.role != input.role || before.name != input.name || before.soul != input.soul;
     store
         .db
         .execute(
-            "UPDATE bots SET name=?2,role=?3,instructions=?4,goals=?5,avatar=?6,provider=?7,model=?8,mode=?9,heartbeat_minutes=?10,next_heartbeat_at=?11,memory_version=memory_version+?12,updated_at=?13 WHERE id=?1",
-            params![id, input.name, input.role, input.instructions, input.goals, input.avatar, input.provider, input.model, input.mode, input.heartbeat_minutes, next, brief_changed as i64, now],
+            "UPDATE bots SET name=?2,role=?3,instructions=?4,goals=?5,avatar=?6,provider=?7,model=?8,mode=?9,heartbeat_minutes=?10,next_heartbeat_at=?11,memory_version=memory_version+?12,updated_at=?13,soul=?14 WHERE id=?1",
+            params![id, input.name, input.role, input.instructions, input.goals, input.avatar, input.provider, input.model, input.mode, input.heartbeat_minutes, next, brief_changed as i64, now, input.soul],
         )
         .map_err(|e| e.to_string())?;
     if before.name != input.name {
@@ -707,6 +820,54 @@ pub async fn bot_project_ids(state: State<'_, AppState>) -> Result<Vec<String>> 
 #[tauri::command]
 pub async fn bot_message(app: tauri::AppHandle, bot_id: String, text: String) -> Result<String> {
     gateway::deliver(&app, gateway::Inbound { bot_id, channel_id: DESKTOP.into(), thread: DESKTOP.into(), sender_id: DESKTOP.into(), sender_name: "You".into(), text, trusted: true }).await
+}
+
+#[tauri::command]
+pub async fn bot_set_capabilities(app: tauri::AppHandle, window: tauri::WebviewWindow, state: State<'_, AppState>, bot_id: String, skills: Vec<String>, mcp: Vec<String>) -> Result<Bot> {
+    guard_main(&window)?;
+    let bot = set_capabilities(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id, &skills, &mcp)?;
+    let _ = app.emit("bots-changed", ());
+    Ok(bot)
+}
+
+/// Starts an ordinary task with a bot (or none). The window then applies the bot's harness and model.
+#[tauri::command]
+pub async fn bot_assign_task(window: tauri::WebviewWindow, state: State<'_, AppState>, session_id: String, bot_id: Option<String>) -> Result<Option<Bot>> {
+    guard_main(&window)?;
+    assign_task(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, bot_id.as_deref())
+}
+
+#[tauri::command]
+pub async fn bot_task_links(state: State<'_, AppState>) -> Result<std::collections::HashMap<String, String>> {
+    task_links(&*state.store.lock().map_err(|e| e.to_string())?)
+}
+
+/// The brief a bot task's next message carries, or nothing when the task has no bot or has
+/// seen this version. Skills are the bot's plus the project's, deduplicated by id; the bot's
+/// ride in the prompt, so nothing is written into a checkout other tasks may share.
+pub(crate) fn task_brief(store: &Store, library: Option<&crate::skills::Library>, session_id: &str) -> Result<Option<String>> {
+    let Some((bot, seen)) = task_bot(store, session_id)? else { return Ok(None) };
+    if seen == bot.memory_version {
+        return Ok(None);
+    }
+    let task = store.session(session_id)?;
+    let root = store.workspace_root(&task.project_id, Some(session_id))?;
+    let project = library.map(|l| l.project_active(&task.provider, &root)).unwrap_or_default();
+    let resolved = crate::skills::scoped::resolve(&bot.skills, &project);
+    let files = crate::skills::scoped::has_skill_folder(&task.provider);
+    // Harnesses with skill folders already read the project's; the rest get every skill as text.
+    let inline: Vec<String> = resolved.iter().filter(|r| !files || r.provenance == "bot").map(|r| r.id.clone()).collect();
+    let installed: Vec<String> = resolved.iter().filter(|r| files && r.provenance != "bot").map(|r| format!("{} ({})", r.id, if r.provenance == "both" { "bot and project" } else { "project" })).collect();
+    let (text, skipped) = library.map(|l| l.prompt_text(&inline)).unwrap_or_default();
+    let memories = memories(store, &bot.id)?;
+    store.db.execute("UPDATE bot_tasks SET brief_version=?2 WHERE session_id=?1", params![session_id, bot.memory_version]).map_err(|e| e.to_string())?;
+    Ok(Some(format!("{}{}", brief::compose(&bot, &memories, brief::TASK, ""), brief::skills(&text, &installed, &skipped))))
+}
+
+#[tauri::command]
+pub async fn bot_task_brief(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<Option<String>> {
+    let library = crate::skills::library(&app).ok();
+    task_brief(&*state.store.lock().map_err(|e| e.to_string())?, library.as_ref(), &session_id)
 }
 
 /// Starts the scheduler and channel connections once the app is ready.

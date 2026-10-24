@@ -7,18 +7,20 @@ import type { Provider, ProviderId, ProviderModel } from './types';
 import { modelChoices } from './model-catalog';
 import { connectInput, guideToggled } from './bots-connect';
 import { avatarPicker, botAvatarHtml, handleAvatarPicker } from './bot-avatars';
-import { renderPanel, panelClick, panelSubmit, panelChange, invalidateActivity, type PanelContext, type Tab } from './bots-panels';
+import { renderPanel, panelClick, panelSubmit, panelChange, invalidateActivity, invalidateCapabilities, type PanelContext, type Tab } from './bots-panels';
 
 export interface Bot {
-  id: string; name: string; role: string; instructions: string; goals: string; avatar: string; projectId: string;
+  id: string; name: string; role: string; instructions: string; goals: string; soul: string; avatar: string; projectId: string;
   provider: ProviderId; model: string; mode: string; heartbeatMinutes: number; nextHeartbeatAt: number | null;
   paused: boolean; memoryVersion: number; notifyChannelId: string | null; notifyThread: string | null; createdAt: number; updatedAt: number;
+  /** Library skill ids and configured MCP server names, by reference. */
+  skills: string[]; mcp: string[];
   /** The bot's conversation in this app, once it exists. */
   desktopSession?: string | null;
   /** The latest thing said in that conversation, flattened to one line. */
   lastMessage?: { role: 'user' | 'assistant'; text: string; at: number } | null;
 }
-export interface BotInput { name: string; role: string; instructions: string; goals: string; avatar: string; provider: ProviderId; model: string; mode: string; heartbeatMinutes: number; }
+export interface BotInput { name: string; role: string; instructions: string; goals: string; soul: string; avatar: string; provider: ProviderId; model: string; mode: string; heartbeatMinutes: number; }
 export interface Memory { id: string; content: string; source: 'user' | 'bot'; createdAt: number; }
 export interface Schedule { id: string; botId: string; title: string; prompt: string; kind: 'once' | 'interval' | 'daily' | 'weekdays'; intervalMinutes: number | null; timeOfDay: string | null; nextRunAt: number | null; lastRunAt: number | null; enabled: boolean; createdBy: 'user' | 'bot'; createdAt: number; }
 export type ChannelKind = 'web' | 'telegram' | 'slack' | 'discord' | 'whatsapp';
@@ -54,31 +56,40 @@ export interface BotsView { dispose(): void; refresh(): void; agent(sessionId: s
 export type Section = Tab | 'profile';
 
 /** The settings nav, like the app's own Settings. Activity also holds conversations and rules. */
-type Nav = 'profile' | 'channels' | 'schedules' | 'memory' | 'activity';
+type Nav = 'profile' | 'skills' | 'channels' | 'schedules' | 'memory' | 'activity';
 const SECTIONS: { id: Nav; label: string; icon: string; text: string }[] = [
   { id: 'profile', label: 'Profile', icon: 'bot', text: 'Who the bot is, how it works and what runs it.' },
   { id: 'channels', label: 'Channels', icon: 'globe', text: 'Talk to it from a browser, Telegram, Slack, Discord or WhatsApp.' },
   { id: 'schedules', label: 'Schedules', icon: 'refresh', text: 'Recurring or one-off work the bot starts on its own.' },
   { id: 'memory', label: 'Memory', icon: 'leaf', text: 'Kept across conversations. The bot adds its own as it learns.' },
+  { id: 'skills', label: 'Skills', icon: 'widget', text: 'Library skills and MCP servers this bot uses, by reference. Nothing is copied.' },
   { id: 'activity', label: 'Activity', icon: 'activity', text: 'Conversations, approval rules and everything the bot did.' },
 ];
 const navFor = (section: Section): Nav => section === 'conversations' || section === 'rules' ? 'activity' : section;
 /** One labelled row, like a Settings row: title and hint on the left, the control on the right. */
 const row = (title: string, hint: string, control: string, stacked = false) => `<label class="bs-row ${stacked ? 'stacked' : ''}"><span class="bs-row-text"><strong>${title}</strong>${hint ? `<small>${escape(hint)}</small>` : ''}</span>${control}</label>`;
 const heading = (title: string, more = '') => `<h3 class="bs-heading">${escape(title)}${more}</h3>`;
-const MODES = [{ id: 'ask', label: 'Ask before acting' }, { id: 'auto', label: 'Auto-approve edits' }, { id: 'plan', label: 'Plan only' }, { id: 'full', label: 'Full access' }];
-const providerModes = (provider: ProviderId) => provider === 'github-copilot' ? MODES.filter(mode => mode.id !== 'auto') : MODES;
+const MODES = [{ id: 'ask', label: 'Ask before acting' }, { id: 'auto', label: 'Auto-approve edits' }, { id: 'review', label: 'Approve for me' }, { id: 'plan', label: 'Plan only' }, { id: 'full', label: 'Full access' }];
+const providerModes = (provider: ProviderId) => MODES.filter(mode => mode.id === 'review' ? ['claude', 'glm', 'mimo'].includes(provider) : !(provider === 'github-copilot' && mode.id === 'auto'));
 const CHECK_INS = [{ minutes: 0, label: 'Off' }, { minutes: 30, label: 'Every 30 minutes' }, { minutes: 60, label: 'Every hour' }, { minutes: 180, label: 'Every 3 hours' }, { minutes: 360, label: 'Every 6 hours' }, { minutes: 1440, label: 'Once a day' }];
 
 /** Starting points, in the spirit of the named bots this feature follows. */
-export const TEMPLATES: { id: string; avatar: string; name: string; role: string; instructions: string; goals: string; heartbeatMinutes: number }[] = [
-  { id: 'chief', avatar: 'panda:1', name: 'Chief of Staff', role: 'Keeps my week on track', instructions: 'Track my commitments and follow-ups. Summarize what changed since we last talked. Ask before sending anything on my behalf.', goals: 'Nothing I promised slips.\nI start each day knowing my top three priorities.', heartbeatMinutes: 360 },
-  { id: 'research', avatar: 'panda:2', name: 'Researcher', role: 'Digs into questions and reports back', instructions: 'Research thoroughly using the web and local files. Cite sources with links. Lead with the answer, then the evidence.', goals: '', heartbeatMinutes: 0 },
-  { id: 'oncall', avatar: 'panda:3', name: 'Dev On-call', role: 'Watches my projects and fixes small things', instructions: 'Work in this workspace. Before changing code, explain the plan. Run tests before saying something works.', goals: 'Keep the build green.\nTell me about failing tests or broken dependencies early.', heartbeatMinutes: 180 },
-  { id: 'inbox', avatar: 'panda:4', name: 'Inbox Triage', role: 'Sorts what needs me from what does not', instructions: 'When I forward messages or notifications, sort them into: needs me today, can wait, ignore. Draft short replies for the first group but never send them yourself.', goals: 'I only look at what actually needs me.', heartbeatMinutes: 0 },
-  { id: 'watch', avatar: 'panda:5', name: 'Watcher', role: 'Keeps an eye on things and tells me when they change', instructions: 'Check the sources I give you. Only message me when something meaningfully changed, with the before and after and a link.', goals: '', heartbeatMinutes: 60 },
-  { id: 'blank', avatar: 'panda:0', name: '', role: '', instructions: '', goals: '', heartbeatMinutes: 0 },
+export const TEMPLATES: { id: string; label: string; avatar: string; name: string; role: string; instructions: string; goals: string; heartbeatMinutes: number }[] = [
+  { id: 'chief', label: 'Chief of staff', avatar: 'panda:1', name: 'Leo', role: 'Chief of staff', instructions: 'Track my commitments and follow-ups. Summarize what changed since we last talked. Ask before sending anything on my behalf.', goals: 'Make sure I don\'t miss a ship date.\nI start each day knowing my top three priorities.', heartbeatMinutes: 360 },
+  { id: 'research', label: 'Researcher', avatar: 'panda:2', name: 'Researcher', role: 'Digs into questions and reports back', instructions: 'Research thoroughly using the web and local files. Cite sources with links. Lead with the answer, then the evidence.', goals: '', heartbeatMinutes: 0 },
+  { id: 'oncall', label: 'Dev On-call', avatar: 'panda:3', name: 'Dev On-call', role: 'Watches my projects and fixes small things', instructions: 'Work in this workspace. Before changing code, explain the plan. Run tests before saying something works.', goals: 'Keep the build green.\nTell me about failing tests or broken dependencies early.', heartbeatMinutes: 180 },
+  { id: 'inbox', label: 'Inbox Triage', avatar: 'panda:4', name: 'Inbox Triage', role: 'Sorts what needs me from what does not', instructions: 'When I forward messages or notifications, sort them into: needs me today, can wait, ignore. Draft short replies for the first group but never send them yourself.', goals: 'I only look at what actually needs me.', heartbeatMinutes: 0 },
+  { id: 'watch', label: 'Watcher', avatar: 'panda:5', name: 'Watcher', role: 'Keeps an eye on things and tells me when they change', instructions: 'Check the sources I give you. Only message me when something meaningfully changed, with the before and after and a link.', goals: '', heartbeatMinutes: 60 },
+  { id: 'blank', label: 'Blank', avatar: 'panda:0', name: '', role: '', instructions: '', goals: '', heartbeatMinutes: 0 },
 ];
+/** A soul.md is copied into the bot once; the file is never read again. */
+const MAX_SOUL = 64 * 1024;
+/** Reads a soul.md as UTF-8 text, or explains why it cannot be used. */
+export async function readSoulFile(file: File): Promise<string> {
+  if (file.size > MAX_SOUL) throw new Error(`${file.name} is larger than 64 KB. Shorten it and try again.`);
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()).replace(/^\uFEFF/, ''); }
+  catch { throw new Error(`${file.name} is not UTF-8 text. Save it as UTF-8 Markdown and try again.`); }
+}
 
 export function age(at: number | null, now = Date.now()): string {
   if (!at) return '';
@@ -107,6 +118,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   let error = '';
   const single = options.layout === 'settings';
   const installed = () => options.providers.filter(provider => provider.installed);
+  invalidateCapabilities();
   host.classList.add('bots');
   host.classList.toggle('bots-single', single);
   host.innerHTML = single
@@ -198,7 +210,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   }
 
   function renderForm(bot: Bot | null): string {
-    const source = bot ?? { ...template, provider: (installed()[0]?.id ?? 'claude') as ProviderId, model: '', mode: 'ask' };
+    const source = bot ?? { ...template, soul: '', provider: (installed()[0]?.id ?? 'claude') as ProviderId, model: '', mode: 'ask' };
     const providers = options.providers;
     const hasInstalledProvider = providers.some(item => item.installed);
     const provider = providers.find(item => item.id === source.provider) ?? providers.find(item => item.installed) ?? providers[0];
@@ -206,16 +218,24 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const models = provider ? modelCatalogs.get(provider.id) ?? provider.models : [];
     const visibleModes = provider ? providerModes(provider.id) : MODES;
     const mode = visibleModes.some(item => item.id === source.mode) ? source.mode : 'ask';
-    const templates = bot ? '' : `<div class="bots-templates" role="group" aria-label="Start from">${TEMPLATES.map(item => `<button type="button" data-template="${item.id}" aria-pressed="${item.id === template.id}">${botAvatarHtml(item.avatar, item.name, 'bots-template-avatar')}${escape(item.name || 'Blank')}</button>`).join('')}</div>`;
+    const templates = bot ? '' : `<div class="bots-templates" role="group" aria-label="Start from">${TEMPLATES.map(item => `<button type="button" data-template="${item.id}" aria-pressed="${item.id === template.id}">${botAvatarHtml(item.avatar, item.label, 'bots-template-avatar')}${escape(item.label)}</button>`).join('')}</div>`;
     const checkIns = `<select name="heartbeatMinutes" aria-label="Check-ins">${CHECK_INS.map(item => `<option value="${item.minutes}" ${item.minutes === source.heartbeatMinutes ? 'selected' : ''}>${item.label}</option>`).join('')}</select>`;
     return `<form class="bots-form" novalidate>
       ${bot ? '' : '<h3>New bot</h3><p class="bots-lede">A bot is an agent that lives on this computer. It remembers, works on a schedule, and answers you here, in a browser, or in Telegram, Slack, Discord and WhatsApp.</p>'}
       ${templates}
       <div class="bs-group">
         <div class="bs-row stacked"><span class="bs-row-text"><strong>Icon</strong></span>${avatarPicker(source.avatar)}</div>
-        ${row('Name', '', `<input name="name" maxlength="60" required value="${escape(source.name)}" placeholder="Scout" aria-label="Name" autocomplete="off">`)}
-        ${row('Job', '', `<input name="role" maxlength="200" value="${escape(source.role)}" placeholder="What it's for, in a few words" aria-label="Job" autocomplete="off">`)}
-        ${row('Instructions', 'How it should work, what to always or never do', `<textarea name="instructions" rows="4" maxlength="16000" aria-label="Instructions">${escape(source.instructions)}</textarea>`, true)}
+        ${row('Name', '', `<input name="name" maxlength="60" required value="${escape(source.name)}" placeholder="Leo" aria-label="Name" autocomplete="off">`)}
+        ${row('Role', 'What it does, in a few words', `<input name="role" maxlength="200" value="${escape(source.role)}" placeholder="Chief of staff" aria-label="Role" autocomplete="off">`)}
+        ${row('Instructions', 'How it works: duties, workflows, when to interrupt you, report formats', `<textarea name="instructions" rows="4" maxlength="16000" aria-label="Instructions" placeholder="Bucket updates by impact. In a crisis, two sentences, then two or three options.">${escape(source.instructions)}</textarea>`, true)}
+      </div>
+      ${heading('Personality', infoMark('Optional. Tone, values and conversational style, kept apart from the instructions. Importing copies the file once; later changes to the file do not change the bot. Personality never grants tools or permissions.', 'About personality'))}
+      <div class="bs-group">
+        <div class="bs-row stacked bots-soul"><span class="bs-row-text"><strong>Soul</strong><small>Markdown, up to 64 KB</small></span>
+          <textarea name="soul" rows="4" aria-label="Soul" placeholder="# Leo&#10;Dry wit, fiercely loyal, blunt under pressure.">${escape(source.soul)}</textarea>
+          <span class="bots-soul-actions"><button type="button" class="secondary-button" data-bots-action="soul-import">Import soul.md…</button><button type="button" class="secondary-button" data-bots-action="soul-remove" ${source.soul ? '' : 'hidden'}>Remove</button><input type="file" data-soul-file accept=".md,.markdown,.txt,text/markdown,text/plain" hidden></span>
+          <p class="bots-error bots-soul-error" role="alert" hidden></p>
+        </div>
       </div>
       ${heading('Agent')}
       <div class="bs-group">
@@ -226,7 +246,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       ${heading('Check-ins', infoMark('On each check-in the bot reviews its goals and memory using read-only steps, and messages you only when something needs attention.', 'About check-ins'))}
       <div class="bs-group">
         ${row('Check in', '', checkIns)}
-        ${row('Standing goals', 'One per line. Check-ins work toward these.', `<textarea name="goals" rows="2" maxlength="16000" aria-label="Standing goals">${escape(source.goals)}</textarea>`, true)}
+        ${row('Standing goals', 'One per line. Check-ins work toward these.', `<textarea name="goals" rows="2" maxlength="16000" aria-label="Standing goals" placeholder="Make sure I don't miss a ship date">${escape(source.goals)}</textarea>`, true)}
       </div>
       <div class="dialog-footer">${!bot && bots.length ? '<button type="button" class="secondary-button" data-bots-action="cancel-edit">Cancel</button>' : ''}<button type="submit" class="primary-button">${bot ? 'Save' : 'Create bot'}</button></div>
     </form>`;
@@ -235,7 +255,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   function readForm(form: HTMLFormElement): BotInput {
     const data = new FormData(form);
     const text = (name: string) => String(data.get(name) ?? '').trim();
-    return { name: text('name'), role: text('role'), instructions: text('instructions'), goals: text('goals'), avatar: text('avatar'), provider: text('provider') as ProviderId, model: text('model'), mode: text('mode'), heartbeatMinutes: Number(text('heartbeatMinutes')) || 0 };
+    return { name: text('name'), role: text('role'), instructions: text('instructions'), goals: text('goals'), soul: text('soul'), avatar: text('avatar'), provider: text('provider') as ProviderId, model: text('model'), mode: text('mode'), heartbeatMinutes: Number(text('heartbeatMinutes')) || 0 };
   }
 
   /** Identity and live state on the left; the conversation, pause, and the rare destructive actions on the right. */
@@ -308,6 +328,8 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     if (action === 'new') { editing = 'new'; template = TEMPLATES[0]; confirming = null; render(); pane.querySelector<HTMLInputElement>('input[name=name]')?.focus(); }
     else if (action === 'cancel-edit') { editing = null; render(); }
     else if (action === 'more') { moreOpen = !moreOpen; render(); if (moreOpen) pane.querySelector<HTMLElement>('.bp-menu [role=menuitem]')?.focus(); }
+    else if (action === 'soul-import') pane.querySelector<HTMLInputElement>('input[data-soul-file]')?.click();
+    else if (action === 'soul-remove') setSoul('');
     else if (action === 'open-chat' && bot) options.openChat(bot.id);
     else if (action === 'pause' && bot) void work(async () => { await options.call('bot_set_paused', { botId: bot.id, paused: !bot.paused }); options.notify(bot.paused ? `${bot.name} resumed` : `${bot.name} paused`); await load(); });
     else if (action === 'reset' && bot) context.confirm(`Reset ${bot.name}?`, 'This deletes its conversations, memories, schedules and activity. Its instructions, channels and rules stay.', 'Reset', async () => { await options.call('bot_reset', { botId: bot.id }); options.notify(`${bot.name} was reset`); await load(); });
@@ -333,9 +355,26 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       options.openChat(bot.id);
     });
   };
+  /** Edits the form in place (a render would drop unsaved fields); saving stores it. */
+  function setSoul(text: string, problem = ''): void {
+    const field = pane.querySelector<HTMLTextAreaElement>('.bots-form textarea[name=soul]');
+    const alert = pane.querySelector<HTMLElement>('.bots-soul-error');
+    if (!field || !alert) return;
+    if (!problem) field.value = text;
+    alert.textContent = problem; alert.hidden = !problem;
+    pane.querySelector<HTMLElement>('[data-bots-action=soul-remove]')!.hidden = !field.value;
+    field.focus();
+  }
   const change = (event: Event) => {
     if (handleAvatarPicker(event)) return;
     const target = event.target as HTMLElement;
+    if (target.matches('input[data-soul-file]')) {
+      const input = target as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = '';
+      if (file) void readSoulFile(file).then(text => setSoul(text), (failure: Error) => setSoul('', failure.message));
+      return;
+    }
     if (target.matches('.bots-form select[name=provider]')) {
       const provider = options.providers.find(item => item.id === (target as HTMLSelectElement).value);
       const select = pane.querySelector<HTMLSelectElement>('.bots-form select[name=model]');

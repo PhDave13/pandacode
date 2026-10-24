@@ -720,6 +720,59 @@ differences, read from omp 18.12's `modes/rpc/rpc-types.ts` and CLI flag table:
 Accounts, models and thinking levels are omp's own. Live check:
 `cargo test installed_omp -- --ignored`.
 
+## Custom OpenAI-compatible endpoints (Ollama, FreeLLMAPI, local models)
+
+PandaCode has no "custom provider" box; it launches harnesses, and a harness
+brings its own model list. For any server that speaks the OpenAI chat API
+(Ollama, LM Studio, [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi),
+a self-hosted gateway), add it to OpenCode's own config and pick its models in
+PandaCode.
+
+1. Add the provider to `~/.config/opencode/opencode.json` (or a project
+   `opencode.json`). Ollama:
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "provider": {
+       "ollama": {
+         "npm": "@ai-sdk/openai-compatible",
+         "name": "Ollama (local)",
+         "options": { "baseURL": "http://localhost:11434/v1" },
+         "models": { "qwen3-coder": { "name": "Qwen3 Coder" } }
+       }
+     }
+   }
+   ```
+
+   For FreeLLMAPI or another hosted gateway, use the same shape with its URL
+   and key; `{env:NAME}` reads the key from the environment:
+
+   ```json
+   "freellmapi": {
+     "npm": "@ai-sdk/openai-compatible",
+     "name": "FreeLLMAPI",
+     "options": { "baseURL": "https://YOUR-HOST/v1", "apiKey": "{env:FREELLMAPI_KEY}" },
+     "models": { "YOUR-MODEL-ID": { "name": "My model" } }
+   }
+   ```
+
+2. Open Settings → Agents → OpenCode → **Choose models** (the OpenCode card's
+   button), refresh, tick the new models and save.
+3. Pick the model from the composer's OpenCode group.
+
+PandaCode only lists what `opencode models --verbose` reports, so a model that
+is missing there is a config problem; check it with `opencode models` in a
+terminal. At launch PandaCode sets only the permission policy through
+`OPENCODE_CONFIG_CONTENT` (`providers/acp.rs`); your `opencode.json` is read by
+OpenCode as usual and never rewritten. To keep a separate config per setup, add
+a [named connection](#named-connections) for OpenCode with its config folder
+(`OPENCODE_CONFIG_DIR`) pointing at a folder holding that `opencode.json`.
+
+For gateways that speak the Anthropic protocol instead, add a connection for
+Claude Code and set `ANTHROPIC_BASE_URL` (and a Secret `ANTHROPIC_AUTH_TOKEN`)
+under Environment; the model name comes from that gateway.
+
 ## Secret storage
 
 `src-tauri/src/secret_store.rs` holds every app secret: provider keys

@@ -438,3 +438,129 @@ async fn live_services_reject_fake_credentials_clearly() {
     println!("whatsapp: {whatsapp}");
     assert!(whatsapp.contains("Meta rejected the access token") || whatsapp.starts_with("WhatsApp:"), "{whatsapp}");
 }
+
+#[test]
+fn soul_persists_apart_from_instructions_and_rebriefs_when_changed() {
+    let f = fixture();
+    let plain = bot(&f);
+    assert_eq!(plain.soul, "");
+    let brief_text = brief::compose(&plain, &[], DESKTOP, "");
+    assert!(!brief_text.contains("Personality"), "a bot without a soul keeps today's brief");
+
+    let mut with_soul = input("Leo");
+    with_soul.role = "Chief of staff".into();
+    with_soul.goals = "Make sure I don't miss a ship date.".into();
+    with_soul.soul = "# Leo\nDry wit, loyal, blunt under pressure.".into();
+    let leo = create(&f.store, &with_soul, &f.root).unwrap();
+    let saved = get(&f.store, &leo.id).unwrap();
+    assert_eq!(saved.soul, "# Leo\nDry wit, loyal, blunt under pressure.");
+    assert_eq!(saved.instructions, "Be brief.");
+    let text = brief::compose(&saved, &[], DESKTOP, "");
+    let (instructions, personality) = (text.find("Instructions from the user:").unwrap(), text.find("Personality (soul, from the user):").unwrap());
+    assert!(instructions < personality);
+    assert!(text[personality..].contains("Dry wit, loyal"));
+    assert!(!text[instructions..personality].contains("Dry wit"));
+    assert!(text.contains("never grants tools, permissions, credentials or authority"));
+
+    let (session, _) = thread_session(&f.store, &saved, DESKTOP, DESKTOP, "Leo · You").unwrap();
+    mark_briefed(&f.store, &session, saved.memory_version).unwrap();
+    let same = update(&f.store, &leo.id, &with_soul).unwrap();
+    assert_eq!(same.memory_version, saved.memory_version, "saving unchanged settings keeps the brief");
+    with_soul.soul = String::new();
+    let removed = update(&f.store, &leo.id, &with_soul).unwrap();
+    assert!(removed.memory_version > saved.memory_version);
+    assert_eq!(removed.soul, "");
+    assert!(!brief::compose(&removed, &[], DESKTOP, "").contains("Personality"));
+}
+
+#[test]
+fn oversized_soul_is_refused() {
+    let f = fixture();
+    let mut big = input("Leo");
+    big.soul = "a".repeat(MAX_SOUL + 1);
+    assert!(create(&f.store, &big, &f.root).unwrap_err().contains("64 KB"));
+    big.soul = "a".repeat(MAX_SOUL);
+    assert_eq!(create(&f.store, &big, &f.root).unwrap().soul.len(), MAX_SOUL);
+}
+
+#[test]
+fn soul_migration_keeps_existing_bots() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE bots(id TEXT PRIMARY KEY, name TEXT NOT NULL); INSERT INTO bots VALUES('b','Scout');").unwrap();
+    migrate_soul(&db).unwrap();
+    migrate_soul(&db).unwrap();
+    let (name, soul): (String, String) = db.query_row("SELECT name, soul FROM bots", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((name.as_str(), soul.as_str()), ("Scout", ""));
+}
+
+#[test]
+fn capabilities_persist_as_references_and_rebrief() {
+    let f = fixture();
+    let a = bot(&f);
+    let b = create(&f.store, &input("Other"), &f.root).unwrap();
+    let saved = set_capabilities(&f.store, &a.id, &["review".into(), "review".into(), "deploy".into()], &["github".into()]).unwrap();
+    assert_eq!((saved.skills.clone(), saved.mcp.clone()), (vec!["review".to_string(), "deploy".into()], vec!["github".to_string()]));
+    assert!(saved.memory_version > a.memory_version);
+    assert_eq!(get(&f.store, &a.id).unwrap().skills, saved.skills, "persisted");
+    assert!(get(&f.store, &b.id).unwrap().skills.is_empty(), "same harness, separate selections");
+    assert!(set_capabilities(&f.store, &a.id, &["../x".into()], &[]).is_err());
+    // Editing the profile keeps the references.
+    assert_eq!(update(&f.store, &a.id, &input("Scout")).unwrap().skills, saved.skills);
+    assert!(brief::compose(&saved, &[], DESKTOP, "").contains("MCP servers chosen for this bot: github"));
+}
+
+#[test]
+fn capability_migration_keeps_existing_bots() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE bots(id TEXT PRIMARY KEY, name TEXT NOT NULL); INSERT INTO bots VALUES('b','Scout');").unwrap();
+    migrate_capabilities(&db).unwrap();
+    migrate_capabilities(&db).unwrap();
+    let (skills, mcp): (String, String) = db.query_row("SELECT skills, mcp FROM bots", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!((skills.as_str(), mcp.as_str()), ("[]", "[]"));
+    db.query_row("SELECT COUNT(*) FROM bot_tasks", [], |r| r.get::<_, i64>(0)).unwrap();
+}
+
+#[test]
+fn project_tasks_get_their_own_bot_brief_and_skill_union() {
+    let f = fixture();
+    let library_dir = f.root.join("library");
+    let library = crate::skills::Library::new(library_dir, f.root.join("home"));
+    let source = || crate::skills::Source { kind: "folder".into(), location: "x".into(), git_ref: None, commit: None };
+    for name in ["review", "lint"] {
+        library.import(crate::skills::Kind::Skill, vec![("SKILL.md".into(), format!("---\nname: {name}\ndescription: {name} things\n---\nDo {name}.\n").into_bytes())], name, source()).unwrap();
+    }
+    let checkout = f.root.join("project");
+    std::fs::create_dir_all(&checkout).unwrap();
+    let project = f.store.add_project(&checkout).unwrap();
+    library.activate("lint", "kimi", crate::skills::Scope::Project, Some(&f.store.workspace_root(&project.id, None).unwrap()), false).unwrap();
+    let reviewer = set_capabilities(&f.store, &bot(&f).id, &["review".into()], &[]).unwrap();
+    let mut other_input = input("Writer");
+    other_input.instructions = "Write docs.".into();
+    let writer = create(&f.store, &other_input, &f.root).unwrap();
+
+    // Two tasks share one checkout with different bots, and a third has none.
+    let one = f.store.create_session(&project.id, "kimi", "default", "ask").unwrap();
+    let two = f.store.create_session(&project.id, "kimi", "default", "ask").unwrap();
+    let plain = f.store.create_session(&project.id, "kimi", "default", "ask").unwrap();
+    assign_task(&f.store, &one.id, Some(&reviewer.id)).unwrap();
+    assign_task(&f.store, &two.id, Some(&writer.id)).unwrap();
+    assert!(assign_task(&f.store, &one.id, Some("missing")).is_err());
+
+    let first = task_brief(&f.store, Some(&library), &one.id).unwrap().unwrap();
+    assert!(first.contains("You are Scout") && first.contains("Do review.") && first.contains("Do lint."), "union of bot and project skills");
+    assert_eq!(first.matches("### review").count(), 1);
+    assert!(!first.contains("pandacode_bot_remember"), "bot tools are not registered in project tasks");
+    assert_eq!(task_brief(&f.store, Some(&library), &one.id).unwrap(), None, "the brief goes with the first message only");
+    let second = task_brief(&f.store, Some(&library), &two.id).unwrap().unwrap();
+    assert!(second.contains("You are Writer") && !second.contains("Do review."), "tasks stay isolated");
+    assert_eq!(task_brief(&f.store, Some(&library), &plain.id).unwrap(), None);
+    assert!(!checkout.join(".claude").exists(), "nothing is written into the shared checkout");
+
+    let links = task_links(&f.store).unwrap();
+    assert_eq!((links[&one.id].as_str(), links[&two.id].as_str(), links.len()), (reviewer.id.as_str(), writer.id.as_str(), 2));
+    assign_task(&f.store, &one.id, None).unwrap();
+    assert_eq!(task_bot(&f.store, &one.id).unwrap(), None);
+    // A bot's own conversation is never relinked to another bot.
+    let (thread, _) = thread_session(&f.store, &writer, DESKTOP, DESKTOP, "x").unwrap();
+    assert!(assign_task(&f.store, &thread, Some(&reviewer.id)).is_err());
+}

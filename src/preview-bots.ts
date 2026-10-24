@@ -10,6 +10,8 @@ export interface PreviewBotsHost {
 interface Store { bot: Bot; memories: Memory[]; schedules: Schedule[]; channels: Channel[]; pairings: Pairing[]; threads: Thread[]; rules: Rule[]; activity: Activity[] }
 const bots = new Map<string, Store>();
 let activityId = 1;
+/** Ordinary tasks started with a bot, and those that have had its brief. */
+const taskBots = new Map<string, string>(), taskBriefed = new Set<string>();
 const MINUTE = 60_000;
 const MODES = ['ask', 'auto', 'plan', 'full'];
 
@@ -20,7 +22,7 @@ function validate(input: BotInput): BotInput {
   if (!name) throw new Error('Give the bot a name.');
   if (!MODES.includes(input.mode)) throw new Error('Choose a permission mode for the bot.');
   if (!input.provider) throw new Error('Choose a harness and model for the bot.');
-  return { ...input, name, role: String(input.role ?? '').trim(), avatar: /^(panda:\d|data:image\/)/.test(String(input.avatar ?? '')) ? String(input.avatar) : [...String(input.avatar ?? '')].slice(0, 4).join(''), heartbeatMinutes: Number(input.heartbeatMinutes) || 0 };
+  return { ...input, name, role: String(input.role ?? '').trim(), soul: String(input.soul ?? '').trim(), avatar: /^(panda:\d|data:image\/)/.test(String(input.avatar ?? '')) ? String(input.avatar) : [...String(input.avatar ?? '')].slice(0, 4).join(''), heartbeatMinutes: Number(input.heartbeatMinutes) || 0 };
 }
 function nextRun(input: Pick<Schedule, 'kind' | 'intervalMinutes' | 'timeOfDay'>, runAt: number | null): number | null {
   const now = Date.now();
@@ -111,7 +113,7 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
       const input = validate(args.input);
       const id = crypto.randomUUID(), now = Date.now();
       const project = host.addProject(input.name);
-      const bot: Bot = { ...input, id, projectId: project.id, paused: false, memoryVersion: 0, notifyChannelId: null, notifyThread: null, nextHeartbeatAt: input.heartbeatMinutes ? now + input.heartbeatMinutes * MINUTE : null, createdAt: now, updatedAt: now };
+      const bot: Bot = { ...input, skills: [], mcp: [], id, projectId: project.id, paused: false, memoryVersion: 0, notifyChannelId: null, notifyThread: null, nextHeartbeatAt: input.heartbeatMinutes ? now + input.heartbeatMinutes * MINUTE : null, createdAt: now, updatedAt: now };
       const entry: Store = { bot, memories: [], schedules: [], channels: [], pairings: [], threads: [], rules: [], activity: [] };
       log(entry, 'created', `Created ${bot.name}`);
       bots.set(id, entry); result = structuredClone(bot); changed(); break;
@@ -142,10 +144,31 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
       thread.updatedAt = Date.now();
       log(entry, 'inbound', `You (desktop): ${text.slice(0, 160)}`);
       // Like the native gateway, the first message of a thread carries the bot's brief; the transcript folds it.
-      const brief = briefed.has(thread.sessionId) ? '' : `\n\nBot brief:\nYou are ${entry.bot.name}. ${entry.bot.instructions}`.trimEnd();
+      const brief = briefed.has(thread.sessionId) ? '' : `\n\nBot brief:\nYou are ${entry.bot.name}. ${entry.bot.instructions}${entry.bot.soul ? `\n\nPersonality (soul, from the user):\n${entry.bot.soul}` : ''}`.trimEnd();
       briefed.add(thread.sessionId);
       await host.invoke('send_message', { sessionId: thread.sessionId, text: text + brief, imageIds: [], moodboardIds: [] });
       result = thread.sessionId; changed(); break;
+    }
+    case 'bot_set_capabilities': {
+      const entry = store(args.botId);
+      entry.bot = { ...entry.bot, skills: [...new Set<string>(args.skills ?? [])], mcp: [...new Set<string>(args.mcp ?? [])], memoryVersion: entry.bot.memoryVersion + 1, updatedAt: Date.now() };
+      log(entry, 'updated', 'Skills and MCP servers changed'); result = structuredClone(entry.bot); changed(); break;
+    }
+    case 'bot_assign_task': {
+      if ([...bots.values()].some(entry => entry.threads.some(thread => thread.sessionId === args.sessionId))) throw new Error('A bot\'s own conversations already use that bot.');
+      taskBriefed.delete(args.sessionId);
+      if (!args.botId) { taskBots.delete(args.sessionId); result = null; break; }
+      result = structuredClone(store(args.botId).bot); taskBots.set(args.sessionId, args.botId); break;
+    }
+    case 'bot_task_links': result = Object.fromEntries(taskBots); break;
+    case 'bot_task_brief': {
+      const botId = taskBots.get(args.sessionId);
+      if (!botId || taskBriefed.has(args.sessionId)) { result = null; break; }
+      const bot = store(botId).bot; taskBriefed.add(args.sessionId);
+      result = `\n\nBot brief:\nYou are ${bot.name}. ${bot.instructions}${bot.skills.length ? `\n\nSkills (from the PandaCode library):\n${bot.skills.map(id => `### ${id}`).join('\n')}` : ''}${bot.mcp.length ? `\n\nMCP servers chosen for this bot: ${bot.mcp.join(', ')}.` : ''}`;
+      // Tests read the briefs sent, since the transcript hides them.
+      ((globalThis as any).__botTaskBriefs ??= []).push({ sessionId: args.sessionId, brief: result });
+      break;
     }
     case 'bot_schedule_create': {
       const entry = store(args.botId); const input = args.input ?? {};

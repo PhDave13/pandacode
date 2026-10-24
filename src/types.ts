@@ -1,5 +1,5 @@
 export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'omp' | 'github-copilot' | 'muse';
-export type Mode = 'ask' | 'auto' | 'plan' | 'full';
+export type Mode = 'ask' | 'auto' | 'review' | 'plan' | 'full';
 export type TaskStage = 'pending' | 'in_progress' | 'review' | 'completed';
 export interface Project { id: string; name: string; path: string; }
 export interface ContextUsage { usedTokens: number; contextWindow: number | null; }

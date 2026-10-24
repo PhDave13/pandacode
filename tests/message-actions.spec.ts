@@ -15,7 +15,7 @@ const history = [
 const errors = new WeakMap<Page, string[]>();
 const transcript = (page: Page) => page.getByRole('log', { name: 'Conversation', exact: true });
 const prompt = (page: Page) => page.locator('#prompt');
-const action = (page: Page, key: number | string, kind: 'copy' | 'fork', task = sessionId) => transcript(page)
+const action = (page: Page, key: number | string, kind: 'copy' | 'fork' | 'edit', task = sessionId) => transcript(page)
   .locator(`[data-message-action="${kind}"][data-message-session="${task}"][data-message-key="${key}"]`);
 
 async function install(page: Page): Promise<void> {
@@ -166,7 +166,27 @@ test.describe('conversation message actions', () => {
     await page.locator(`.task-item[data-id="${forkId}"]`).click();
     await expect(transcript(page)).not.toContainText('Later request');
     expect(await calls(page, 'send_message')).toEqual([]);
-    expect(await calls(page, 'fork_session_at_message')).toEqual([{ command: 'fork_session_at_message', args: { sessionId, messageId: 204 } }]);
+    expect(await calls(page, 'fork_session_at_message')).toEqual([{ command: 'fork_session_at_message', args: { sessionId, messageId: 204, exclusive: false } }]);
+  });
+
+  test('edit rewinds to before a user message, drops it from the new task and puts its text in the composer', async ({ page }) => {
+    await install(page); const original = await snapshot(page);
+    await page.evaluate(() => (window as any).__messageActionsTest.setContent(205, 'Fix the tpyo please.\n\nDocument context: notes.md\nbody'));
+    await action(page, 205, 'edit').click();
+    const forkId = await selectedFork(page), fork = await snapshot(page, forkId);
+    expect(fork.task.resumeId).toBeNull();
+    expect(fork.messages.map(message => message.content)).toEqual(history.slice(0, 4).map(message => message.content));
+    await expect(prompt(page)).toHaveValue('Fix the tpyo please.');
+    await expect(prompt(page)).toBeFocused();
+    await expect(transcript(page)).not.toContainText('tpyo');
+    expect((await snapshot(page)).messages.length).toBe(original.messages.length);
+    expect(await calls(page, 'send_message')).toEqual([]);
+    expect(await calls(page, 'fork_session_at_message')).toEqual([{ command: 'fork_session_at_message', args: { sessionId, messageId: 205, exclusive: true } }]);
+    // Assistant responses have no Edit; a running thread disables it.
+    await page.locator(`.task-item[data-id="${sessionId}"]`).click();
+    await expect(action(page, 204, 'edit')).toHaveCount(0);
+    await page.evaluate(id => (window as any).__messageActionsTest.emit({ sessionId: id, kind: 'status', text: 'Starting agent' }), sessionId);
+    await expect(transcript(page)).toHaveAttribute('data-running', '');
   });
 
   test('starts a ClipboardItem write during the click and copies full stored text after the database responds', async ({ page }) => {

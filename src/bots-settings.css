@@ -109,3 +109,6 @@ dialog.bot-settings-dialog{width:min(880px,calc(100vw - 32px));max-height:88dvh}
   .bots-single .bs-nav{position:static;flex-direction:row;overflow-x:auto;scrollbar-width:none}
   .bs-row{grid-template-columns:minmax(0,1fr);gap:.5rem}
 }
+.bots-soul-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.bots-soul-actions [hidden],.bots-soul-error[hidden]{display:none}
+.bots-soul-error{margin:0}

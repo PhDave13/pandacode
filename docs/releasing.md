@@ -51,6 +51,32 @@ a new key; if it leaks, rotate it the same way. The maintainer's copy lives outs
 repository (never commit it). Update downloads need the release to be publicly
 readable, so automatic updates start working once the repository is public.
 
+## SBOMs and scan coverage
+
+The `sbom` job in `release.yml` runs after the builds and attaches these to the
+release (it never blocks publishing; a failed job just means they are missing):
+
+- `<asset>.cdx.json`: a CycloneDX SBOM that syft generates from each installer
+  (`.dmg`, `-setup.exe`, `.AppImage`) and macOS updater archive;
+- `pandacode-npm.cdx.json` and `pandacode-rust.cdx.json`: inventories of
+  `package-lock.json` and `Cargo.lock` at the release commit. The website, relay and
+  npx package are not shipped in the app and are excluded;
+- `SBOM-COVERAGE.json` and `SBOM-COVERAGE.md`: scanner names and versions, the
+  vulnerability database build time, the commit, the version, each artifact's SHA-256
+  and platform, the component count, grype's finding counts by severity, and the limits.
+
+An inventory that errors or finds no components is listed as **incomplete** and its scan
+as `not-scanned`; it is never reported as clean. Compressed installers often end up
+incomplete, which is why the lockfile SBOMs are published beside them. The WebView and
+other operating-system libraries are supplied by the host, not bundled, and not scanned.
+The same summary appears on the workflow run page. Findings are reported, not gating;
+record any reviewed exception (scope, reason, owner, expiry) in the release notes.
+
+syft and grype are pinned by version and SHA-256 in the job's `env`. To upgrade, take the
+new Linux amd64 tarball's checksum from the tool's `*_checksums.txt` release asset and
+change the version and checksum together. Actions in the workflow are pinned by full
+commit SHA; keep it that way. Run the helper's tests with `npm run test:release`.
+
 ## `npx pandacode`
 
 `packages/npx` is the `pandacode` npm package: it downloads the latest release asset

@@ -67,14 +67,33 @@ fn channel_kind(store: &Store, channel_id: &str) -> String {
 }
 
 /// The text a turn receives: the message, plus the brief when the thread has not seen this version.
-fn compose(store: &Store, bot: &Bot, session_id: &str, kind: &str, sender: &str, text: &str) -> Result<String> {
+fn compose(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str, kind: &str, sender: &str, text: &str) -> Result<String> {
+    let (skills, skipped) = workspace_skills(app, store, bot, session_id);
     let seen = super::brief_version_of(store, session_id)?;
     if seen == bot.memory_version {
         return Ok(text.to_owned());
     }
+    for error in &skipped {
+        super::log(store, &bot.id, "error", &format!("Skill left out: {error}"), json!({"sessionId": session_id}))?;
+    }
     let memories = super::memories(store, &bot.id)?;
     super::mark_briefed(store, session_id, bot.memory_version)?;
-    Ok(format!("{text}{}", brief::compose(bot, &memories, kind, sender)))
+    Ok(format!("{text}{}{skills}", brief::compose(bot, &memories, kind, sender)))
+}
+
+/// Puts the bot's skills in its own workspace for this conversation's harness (project scope,
+/// never harness-global), and returns the brief text for skills that harness reads from the prompt.
+fn workspace_skills(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str) -> (String, Vec<String>) {
+    let (Ok(task), Ok(root), Ok(library)) = (store.session(session_id), store.workspace_root(&bot.project_id, None), crate::skills::library(app)) else { return Default::default() };
+    let harness = task.provider;
+    let mut skipped = library.sync_project(&harness, &root, &bot.skills);
+    if crate::skills::scoped::has_skill_folder(&harness) {
+        let installed = library.project_active(&harness, &root).into_iter().filter(|id| bot.skills.contains(id)).collect::<Vec<_>>();
+        return (brief::skills("", &installed, &skipped), skipped);
+    }
+    let (text, more) = library.prompt_text(&bot.skills);
+    skipped.extend(more);
+    (brief::skills(&text, &[], &skipped), skipped)
 }
 
 /// Starts a turn, or queues the message when the task is already working.
@@ -140,7 +159,7 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<
             super::set_notify_target(&store, &bot.id, Some(&inbound.channel_id), Some(&inbound.thread))?;
         }
         super::log(&store, &bot.id, "inbound", &format!("{} ({kind}): {}", inbound.sender_name, text.chars().take(160).collect::<String>()), json!({"channelId": inbound.channel_id, "sessionId": session_id, "new": created}))?;
-        compose(&store, &bot, &session_id, &kind, &inbound.sender_name, &text)?
+        compose(app, &store, &bot, &session_id, &kind, &inbound.sender_name, &text)?
     };
     start_or_queue(app, &bot, &session_id, turn).await?;
     let _ = app.emit("bots-changed", ());
@@ -159,7 +178,7 @@ pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &
         }
         let (session, _) = super::thread_session(&store, &bot, "schedule", "schedule", &format!("{} · Scheduled work", bot.name))?;
         super::log(&store, &bot.id, "scheduled", label, json!({"sessionId": session}))?;
-        let turn = compose(&store, &bot, &session, "schedule", "", &format!("{label}\n\n{prompt}"))?;
+        let turn = compose(app, &store, &bot, &session, "schedule", "", &format!("{label}\n\n{prompt}"))?;
         (bot, session, turn)
     };
     start_or_queue(app, &bot, &session_id, turn).await?;

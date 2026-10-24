@@ -32,3 +32,8 @@
 .skills-subheading{margin:.9rem 0 .4rem;font-size:.8rem}
 .skills-unmanaged{margin:0;padding-left:1rem;font-size:.76rem;display:flex;flex-direction:column;gap:6px}
 .skills-unmanaged span{color:var(--muted)}
+.skills-catalog-skills{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.skills-catalog-skill small{display:block;margin-left:22px;font-size:.72rem;color:var(--muted);overflow-wrap:anywhere}
+.skills-catalog-skill code{font-size:.72rem;color:var(--muted)}
+.skills-catalog-skill .skills-conflict{color:var(--danger)}
+.skills-item-head .skills-confirm{flex-wrap:nowrap}

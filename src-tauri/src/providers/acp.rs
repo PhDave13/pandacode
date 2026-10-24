@@ -105,7 +105,8 @@ pub(super) fn configuration(mode: &str) -> String {
     let permission = match mode {
         "full" => json!({"*":"allow"}),
         "auto" => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow","edit":"allow"}),
-        "plan" => json!({"*":"deny","read":"allow","glob":"allow","grep":"allow","lsp":"allow"}),
+        // Investigation stays open: web lookups run; reads outside the project ask.
+        "plan" => json!({"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow","external_directory":"ask"}),
         _ => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow"}),
     };
     // Inline settings have the highest documented precedence and are private
@@ -359,10 +360,10 @@ impl Protocol {
                     return Ok(step);
                 }
             }
-            // Read and search requests keep the ordinary approval path, as in Standard mode.
+            // Read, search and fetch requests keep the ordinary approval path, as in Standard mode.
             if copilot
                 && self.config.mode == "plan"
-                && !matches!(field(&value["params"]["toolCall"], "kind"), "read" | "search")
+                && !matches!(field(&value["params"]["toolCall"], "kind"), "read" | "search" | "fetch")
             {
                 let tool = &value["params"]["toolCall"];
                 let kind = field(tool, "kind");
@@ -1289,12 +1290,12 @@ mod tests {
         }
     }
     #[test]
-    fn copilot_plan_mode_sends_read_and_search_through_normal_approval() {
+    fn copilot_plan_mode_sends_read_search_and_fetch_through_normal_approval() {
         let mut cfg = config("github-copilot");
         cfg.mode = "plan".into();
         let mut p = Protocol::new(cfg);
         p.remote_id = "copilot-session".into();
-        for kind in ["read", "search"] {
+        for kind in ["read", "search", "fetch"] {
             let request = json!({"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"copilot-session","toolCall":{"title":"Requested action","kind":kind},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}});
             let step = p.receive(request).unwrap();
             assert!(step.write.is_empty(), "{kind} must wait for the user");
@@ -1893,6 +1894,10 @@ mod tests {
         let value: Value = serde_json::from_str(inline.to_str().unwrap()).unwrap();
         assert_eq!(value["permission"]["*"], "deny");
         assert_eq!(value["permission"]["read"], "allow");
+        for (tool, expected) in [("webfetch", "allow"), ("websearch", "allow"), ("list", "allow"), ("external_directory", "ask"), ("edit", "deny"), ("bash", "deny")] {
+            let actual = value["permission"].get(tool).unwrap_or(&value["permission"]["*"]);
+            assert_eq!(actual, expected, "{tool}");
+        }
         assert_eq!(value["agent"]["plan"]["permission"]["*"], "deny");
         let mut c = Command::new("agy_acp_server.par");
         configure(&mut c, &config("antigravity"));

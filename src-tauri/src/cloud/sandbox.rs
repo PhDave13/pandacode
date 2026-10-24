@@ -76,7 +76,7 @@ pub trait Sandbox: Send + Sync {
     }
 }
 
-fn download_command(path: &str, offset: u64, max: usize) -> String {
+pub(super) fn download_command(path: &str, offset: u64, max: usize) -> String {
     format!("[ -f {p} ] && tail -c +{} {p} 2>/dev/null | head -c {max} | base64 2>/dev/null | tr -d '\\n'", offset + 1, p = super::shell_quote(path))
 }
 
@@ -88,7 +88,7 @@ pub fn checked((code, output): (Option<i32>, String)) -> Result<()> {
 }
 
 /// Every provider cloud agents can run on, with its display name.
-pub const AGENT_PROVIDERS: [(&str, &str); 15] = [
+pub const AGENT_PROVIDERS: [(&str, &str); 16] = [
     ("daytona", "Daytona"),
     ("cloudflare", "Cloudflare"),
     ("aws", "AWS EC2"),
@@ -103,6 +103,7 @@ pub const AGENT_PROVIDERS: [(&str, &str); 15] = [
     ("freestyle", "Freestyle"),
     ("railway", "Railway"),
     ("boat", "boat"),
+    ("instabox", "InstaBox"),
     ("agentcore", "AWS AgentCore"),
 ];
 
@@ -123,6 +124,7 @@ pub fn connected(provider: &str) -> Result<Box<dyn Sandbox>> {
         "freestyle" => super::freestyle::sandbox()?,
         "railway" => super::railway_sandbox::sandbox()?,
         "boat" => super::boat::sandbox()?,
+        "instabox" => super::instabox::sandbox()?,
         _ => return Err("This provider can't run cloud agents.".into()),
     })
 }
@@ -139,6 +141,7 @@ pub fn connect(provider: &str, key: &str, options: &Value) -> Result<()> {
         "tensorlake" => super::tensorlake::connect(key, options),
         "freestyle" => super::freestyle::connect(key, options),
         "boat" => super::boat::connect(key, options),
+        "instabox" => super::instabox::connect(key, options),
         _ => Err("Unknown cloud provider.".into()),
     }
 }
@@ -152,11 +155,12 @@ pub fn disconnect(provider: &str) -> Result<()> {
         "tensorlake" => super::tensorlake::disconnect(),
         "freestyle" => super::freestyle::disconnect(),
         "boat" => super::boat::disconnect(),
+        "instabox" => super::instabox::disconnect(),
         _ => Err("Unknown cloud provider.".into()),
     }
 }
 /// Providers whose connect/disconnect live in this registry.
-pub const KEYED: [&str; 8] = ["e2b", "modal", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat"];
+pub const KEYED: [&str; 9] = ["e2b", "modal", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"];
 
 /// Whether a provider is connected well enough to run cloud agents (no network call).
 pub fn ready(provider: &str) -> bool {
