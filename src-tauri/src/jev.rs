@@ -569,7 +569,7 @@ fn decision_needs_key(next: &Saved, incoming: &Option<String>) -> bool {
 }
 #[tauri::command]
 pub async fn jev_decision_models(provider: String) -> Result<Vec<crate::jev_decisions::DecisionModel>> {
-    crate::jev_decisions::models::list(&provider).await.map_err(Into::into)
+    crate::jev_decisions::models::list(&provider).await
 }
 
 fn venv_python(dir: &Path) -> PathBuf {
