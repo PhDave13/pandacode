@@ -48,10 +48,10 @@ test('packs ride along once, fold in the transcript, and the switch-off is said 
   expect(first.startsWith('Fix the flaky search test\n\nResponse style (PandaCode token saver')).toBe(true);
   expect(first).toContain('Telegraphic.');
   expect(first).toContain('least code that fully solves');
-  // Folded behind the attached-context summary, not shown as what the user typed.
+  // A style note, not an attachment: it stays out of the transcript.
   const message = page.locator('.user-message').filter({ hasText: 'Fix the flaky search test' }).last();
-  await expect(message.locator('details.message-context')).toHaveCount(1);
-  await expect(message.locator('details.message-context')).not.toHaveAttribute('open', '');
+  await expect(message.locator('.message-content')).toHaveText('Fix the flaky search test');
+  await expect(message.locator('.message-attachments')).toHaveCount(0);
 
   await send(page, 'And the docs');
   expect((await sent(page)).at(-1)).toBe('And the docs');

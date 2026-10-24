@@ -911,6 +911,16 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
 .steer-state .icon{width:13px;height:13px}
 :is(.steer-state,.queue-status,.queue-next) .support-spinner{width:11px;height:11px}
 .queue-status{margin-left:auto;font-size:.74rem;color:var(--muted)}
+/* Sent attachments: the composer's chips, read-only, each opening what it carried. */
+.message-attachments{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;white-space:normal;text-align:left}
+.message-attachments>.prompt-chip{cursor:pointer;font:inherit;font-size:.72rem;padding-right:8px}
+.message-attachments>.prompt-chip:hover{background:var(--raised);border-color:var(--muted)}
+.message-attachments>.prompt-chip:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.message-attachments>.prompt-chip:active{scale:.97}
+.message-attachments>.prompt-chip-image>.icon{margin:0 2px}
+.message-attachment-dialog{max-width:min(92vw,960px)}
+.message-attachment-image{display:block;max-width:100%;max-height:70vh;margin:0 auto;border-radius:4px;background:#fff;object-fit:contain}
+.message-attachment-raw{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.74rem;line-height:1.55;color:var(--muted);max-height:60vh;overflow:auto;padding:10px 12px;border-radius:3px;background:var(--raised)}
 /* PandaCode is instant: no transitions anywhere. Looping status indicators (spinners,
    working pulses) are animations, not transitions, so they keep running. */
 *,*::before,*::after{transition:none!important}

@@ -187,7 +187,7 @@ test.describe('bots', () => {
     const sent = page.locator('#transcript .user-message').last();
     await expect(sent).toContainText('What can you help me with?');
     // The brief rides along for the agent but is the bot's setup, not an attachment: not shown.
-    await expect(sent.locator('.message-context')).toHaveCount(0);
+    await expect(sent.locator('.message-attachments')).toHaveCount(0);
     await expect(sent.locator('.message-content')).toHaveText('What can you help me with?');
     await expect(page.locator('#transcript .agent-message').last()).toContainText('browser preview', { timeout: 15_000 });
     await expect(page.locator('#prompt')).toHaveValue('');

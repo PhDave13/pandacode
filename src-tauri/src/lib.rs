@@ -2385,6 +2385,54 @@ async fn open_external_url(url: String) -> Result<()> {
     }
 }
 
+/// A sent attachment outside the task's workspace, shown in the file manager. It is only
+/// revealed (selected), never opened, so nothing in it runs.
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<()> {
+    let path = PathBuf::from(path);
+    if !path.is_absolute() || std::fs::symlink_metadata(&path).is_err() {
+        return Err("This attachment is no longer on this computer.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = tokio::process::Command::new("/usr/bin/open");
+        command.arg("-R").arg(&path);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = tokio::process::Command::new("explorer");
+        command.arg(format!("/select,{}", path.display()));
+        command
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let folder = if path.is_dir() { path.clone() } else { path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone()) };
+        let mut command = tokio::process::Command::new("xdg-open");
+        child_env::sanitize(&mut command);
+        command.arg(folder);
+        command
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    // Explorer reports failure even when it showed the item, so only a launch error counts.
+    tokio::time::timeout(std::time::Duration::from_secs(5), command.status())
+        .await
+        .map_err(|_| "Showing the attachment timed out.")?
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A sent image or screenshot from the shared capture registry, for the transcript's chips.
+#[tauri::command]
+async fn prompt_image(app: tauri::AppHandle, id: String) -> Result<Option<String>> {
+    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("browser-captures");
+    blocking(move || prompt_attachments::image_data_url(&dir, &id)).await
+}
+
 #[tauri::command]
 async fn jj_status(state: State<'_, AppState>, project_id: String, session_id: Option<String>) -> Result<jj::JjStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
@@ -3627,6 +3675,8 @@ pub fn run() {
                 skills::skills_discover,
                 set_task_link,
                 import_prompt_image,
+                prompt_image,
+                reveal_path,
                 read_document,
                 describe_folder,
                 list_files,
