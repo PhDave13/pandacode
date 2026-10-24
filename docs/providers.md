@@ -33,6 +33,38 @@ is limited to 8 seconds and 1 MiB of output. Provider-supplied `displayName` val
 take precedence; entries without display metadata show the exact wire model name.
 See [Kimi model configuration](https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/config-files#models).
 
+## How providers relate to agents
+
+Settings → Agents lists the agent harnesses installed on this computer (Claude
+Code, Codex, OpenCode, Pi and the rest). Settings → Providers holds what those
+harnesses sign in with: Claude's connection mode, executable locations, optional
+API keys (DeepSeek, Command Code), and the key-based plans **GLM Coding Plan** and
+**MiMo Token Plan**. The plans are not separate harnesses: each runs your
+installed Claude Code with its own key and endpoint, and appears as its own group
+in the model selector. They are set up only under Providers.
+
+Nothing on the Providers page is applied to every agent. A key or plan is used
+only by the harness it belongs to, and only for tasks where you pick it in the
+model selector. Named connections (below) are extra setups of one harness that a
+task opts into. Each harness's own models stay in that harness; OpenCode's model
+list is chosen once, in Settings → Agents → OpenCode models.
+
+### What PandaCode uses itself
+
+PandaCode needs no provider or model of its own:
+
+- **Thread titles** come from the agent already running the task, through the
+  `pandacode_title` tool, or from the first line of your prompt
+  (`session_titles.rs`). No extra model session is started.
+- **Project checks after turns** run the checkout's own `npm test` or
+  `cargo check` (`checks.rs`); no model is called.
+- **Jev** (optional) uses the keys entered in its own settings for its decision
+  and text-model services (`jev.rs`, `jev_decisions/`), not your agents' logins.
+- **Codex**, when installed, is also started as `codex app-server` to list its
+  integrations and skills, read Codex usage, import Codex
+  conversations and run Codex task commands (`integrations.rs`). None of this is
+  needed to use other agents.
+
 ## Named connections
 
 Settings → Providers → Connections adds named setups of one harness, such as
@@ -63,9 +95,20 @@ its arguments are appended and its environment, including the config folder
 variable, is set after the harness's own configuration. Secret values are
 removed from any error the run returns. The warm-agent key includes the
 connection id and its revision, so another connection, or a saved change to the
-same one, never adopts an idle process. Model catalogs, usage checks and slash
-command discovery still use the global setup. Tasks running on another
-computer use that computer's setup.
+same one, never adopts an idle process. Agent usage reads each Claude Code and
+Codex connection through its own config folder and environment (see
+[agent-usage.md](agent-usage.md)); model catalogs and slash command discovery
+still use the global setup. Tasks running on another computer use that
+computer's setup.
+
+Changing a task's connection starts a fresh harness session, because a session
+lives in its connection's config folder: `connection_assign` clears the resume
+ID and queues context recovery, so the next message carries the conversation
+forward, as a harness switch does. When a run stops at its plan limit and the
+harness has other connections, the usage-limit banner offers **Continue on
+<connection>** for each. It assigns that connection and sends “Continue where
+you left off.” with a note naming the new connection and the one that reached
+its limit, so the transcript shows the move. PandaCode never switches on its own.
 
 ## GitHub Copilot CLI
 

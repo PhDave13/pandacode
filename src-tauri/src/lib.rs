@@ -2,6 +2,7 @@ mod agent_tools;
 mod agent_usage;
 mod agent_updates;
 mod agent_usage_providers;
+mod app_updates;
 mod appearance;
 mod architect;
 mod bots;
@@ -3246,6 +3247,10 @@ pub fn run() {
         std::process::exit(local_signing::cli());
     }
     let app = tauri::Builder::default()
+        // First, as its docs require: a second launch focuses this window instead of opening another.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            tray::show(app)
+        }))
         .plugin(tauri_plugin_dialog::init())
         // Updates come only from GitHub Releases, verified against the public key in tauri.conf.json.
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -3365,6 +3370,7 @@ pub fn run() {
                 support::open_support,
                 support::support_details,
                 local_sign_app,
+                app_updates::app_update_install_supported,
                 agent_updates::check_agent_updates,
                 agent_updates::update_agent,
                 moodboards::list_moodboards,
@@ -3647,6 +3653,7 @@ pub fn run() {
                 list_local_servers,
                 jev::jev_configuration,
                 jev::jev_save_configuration,
+                jev::jev_decision_models,
                 jev::jev_doctor,
                 jev::jev_install_runtime,
                 jev::jev_start,

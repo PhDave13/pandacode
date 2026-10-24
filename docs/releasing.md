@@ -40,6 +40,12 @@ also carries:
 - `latest.json`, written by `scripts/release/updater-manifest.mjs`, naming the version,
   notes and each platform's file and signature.
 
+Settings → About → Updates is Automatic (install when idle and no agent works), Notify
+me (check, then ask with Install and restart / Later in the header) or Off; the old
+`on`/`off` preference maps to Automatic/Off. On Linux a run without `APPIMAGE` (an
+unpacked AppImage or a package) is never installed over: `app_update_install_supported`
+returns false and the app only reports new versions.
+
 The app reads `releases/latest/download/latest.json`, so publishing a release is what
 ships the update. Signing needs two repository secrets, `TAURI_SIGNING_PRIVATE_KEY`
 and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; without them the installers still build but
@@ -183,6 +189,9 @@ On Linux it also needs `mksquashfs` (`squashfs-tools`). The script rebuilds the
 finished AppImage without the Wayland libraries linuxdeploy copied from the
 Ubuntu 22.04 build host: those older copies stop newer Mesa EGL stacks from
 loading and leave WebKit's web process with a blank window (Tauri issue #15665).
+It also rewrites `export GDK_BACKEND=x11` in `apprun-hooks/linuxdeploy-plugin-gtk.sh`
+to `export GDK_BACKEND="${GDK_BACKEND:-x11}"`, so users can choose Wayland, and fails
+the build if that hook or line is missing.
 The image keeps its runtime and is signed again after the rebuild when update
 signing is configured, so publish the asset `build.mjs` produces rather than the
 raw `tauri build` output.

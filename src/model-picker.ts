@@ -261,7 +261,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const teamMarkup = teams.length ? `<section class="model-menu-group" aria-label="Agent teams"><div class="model-menu-group-heading"><h3>${icon('worktree')}Agent teams</h3></div>${teams.map(team => `<button type="button" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(team.detail)}" ${team.selected ? 'aria-current="true"' : ''}>${providerLogo(team.provider)}<span class="model-menu-option-label"><span>${escape(team.name)}</span><span class="model-menu-description">${escape(team.detail)}</span></span>${team.selected ? icon('check') : ''}</button>`).join('')}</section>` : '';
     const connections = options.connections ?? [];
     const currentConnection = options.currentConnection ?? null;
-    let markup = teamMarkup + providers.flatMap(provider => [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({ provider, connection }))).map(({ provider, connection }) => {
+    // Uninstalled harnesses stay out of the picker unless the task already uses one.
+    let markup = teamMarkup + providers.filter(provider => provider.installed || provider.id === current.provider).flatMap(provider => [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({ provider, connection }))).map(({ provider, connection }) => {
       const groupName = connection?.name ?? provider.name;
       const models = modelChoices(provider.id, provider.models, provider.id === current.provider ? current.model : '');
       const providerMatches = [provider.id, provider.name, groupName].some(name => name.toLowerCase().includes(normalized));

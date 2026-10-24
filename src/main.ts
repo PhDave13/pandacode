@@ -64,7 +64,7 @@ import { createFileTabs } from './file-tabs';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
-import { startAppUpdates } from './app-updates';
+import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
@@ -1445,7 +1445,7 @@ function renderComposer(): void {
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', cloudStrip(s) + (running ? '' : limitBanner(s)) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued }));
+  $('#composer').insertAdjacentHTML('beforebegin', cloudStrip(s) + (running ? '' : limitBanner(s, Date.now(), limitAlternatives(s))) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued }));
   renderApprovalBar(); resizePrompt();
   $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
@@ -2264,7 +2264,7 @@ function scheduleLimitResumes(): void {
   }, Math.min(Math.max(0, next - Date.now()), 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
-async function continueAfterLimit(task: Session): Promise<void> {
+async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
   if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishingStreams.has(task.id)) return;
   const hold = state.queueHolds.get(task.id);
   if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
@@ -2272,14 +2272,31 @@ async function continueAfterLimit(task: Session): Promise<void> {
   state.queueBusy.add(task.id);
   try {
     const at = Date.now();
-    await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Continue where you left off.', attachments: [], createdAt: at, updatedAt: at });
+    await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text, attachments: [], createdAt: at, updatedAt: at });
     task.limitedAt = null; task.limitedUntil = null;
   } catch (error) { notify(error instanceof Error ? error.message : String(error)); }
   finally { state.queueBusy.delete(task.id); if (task.id === state.sessionId) renderComposer(); renderNavigation(); }
 }
+/** The harness's other named connections a limited task can continue on (issue #137). */
+function limitAlternatives(s: Session): { id: string; name: string }[] {
+  if (s.remoteDevice) return [];
+  const current = namedConnections.tasks[s.id];
+  return namedConnections.connections.filter(c => c.provider === s.provider && c.id !== current);
+}
+/** Moves the task to another connection and resends with its context: a harness session can't resume
+ *  across config folders, so connection_assign starts a fresh one that context recovery fills in. */
+async function continueOnConnection(task: Session, id: string): Promise<void> {
+  const target = limitAlternatives(task).find(c => c.id === id);
+  if (!target || isRunning(task.id) || state.queueBusy.has(task.id)) return;
+  const from = taskConnection(task)?.name ?? `the default ${provider(task.provider)?.name ?? task.provider} setup`;
+  onNamedConnections(await call('connection_assign', { sessionId: task.id, connectionId: id }));
+  task.resumeId = null;
+  await continueAfterLimit(task, `Continue where you left off. (Moved to the connection “${target.name}” because ${from} reached its usage limit.)`);
+}
 async function limitAction(action: string, element: HTMLElement): Promise<void> {
   const s = session(); if (!s) return;
   if (action === 'limit-continue') return continueAfterLimit(s);
+  if (action === 'limit-switch') return continueOnConnection(s, element.dataset.connection ?? '');
   if (action === 'limit-dismiss') { await call('clear_usage_limit', { sessionId: s.id }); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; scheduleLimitResumes(); renderComposer(); renderNavigation(); return; }
   if (action === 'limit-resume-at-reset') {
     const enabled = (element as HTMLInputElement).checked;
@@ -4152,20 +4169,7 @@ async function boot(): Promise<void> {
   if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
-const updates = startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify });
-{
-  const pill = $('#update-status');
-  const paint = () => {
-    const current = updates.state;
-    pill.hidden = current.kind !== 'ready' && current.kind !== 'installing';
-    if (current.kind !== 'ready' && current.kind !== 'installing') return;
-    pill.title = current.kind === 'ready' ? `PandaCode ${current.version} is ready. Restart now, or it restarts on its own when your agents are done.` : `Installing ${current.version}…`;
-    (pill as HTMLButtonElement).disabled = current.kind === 'installing';
-  };
-  updates.subscribe(paint);
-  pill.addEventListener('click', () => { void updates.restart(); });
-  paint();
-}
+mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify }));
 const agentUpdates = initializeAgentUpdates({
   modal, closeModal, report, providers: () => state.providers,
   providersChanged: async () => { await discoverSettingsProviders(); refreshModelLabels(); slashPicker?.refresh(true); },

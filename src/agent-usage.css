@@ -162,3 +162,8 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 @media(prefers-reduced-motion:reduce){.usage-refresh[aria-busy=true]>.icon{animation:none}}
 @media(prefers-contrast:more){.usage-hero,.usage-card{border-color:var(--border)}.usage-track,.usage-mini-track{outline:1px solid var(--muted)}.cost-area{opacity:.2}}
 @media(forced-colors:active){.usage-agent-dot,.cost-chart-dot,.cost-chart-value::before{forced-color-adjust:none}}
+/* Named connections (issue #137) under their harness's own limits. */
+.usage-connection{margin-top:18px;padding-top:14px;border-top:1px solid var(--usage-line)}
+.usage-connection .usage-card-heading{margin-bottom:10px}
+.usage-connection h4,.usage-connection-default{margin:0 0 10px;font-size:.9rem;font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usage-connection .usage-card-heading h4{margin:0}

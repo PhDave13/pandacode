@@ -136,6 +136,10 @@ test('provider connections are grouped in Providers and never accept secrets in 
   await expect(dialog.getByLabel('Z.ai API key', { exact: true })).toBeDisabled();
   await expect(dialog.locator('#glm-key-form').getByRole('button', { name: 'Save key', exact: true })).toBeDisabled();
   await expect(dialog.getByText('opencode auth login', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Each sign-in, key or plan here is used only by the agent it belongs to.')).toBeVisible();
+  await expect(dialog.getByRole('img', { name: 'How providers relate to agents', exact: true })).toHaveAttribute('data-tip', /Nothing here is applied to every agent/);
+  // OpenCode models are chosen once, in Settings → Agents.
+  await expect(dialog.getByRole('button', { name: 'Choose models', exact: true })).toHaveCount(0);
   await expect(dialog.getByText('agy', { exact: true })).toBeVisible();
   await expect(dialog.getByText('grok login', { exact: true })).toBeVisible();
   const paths = dialog.locator('details').filter({ has: page.getByLabel('Grok executable', { exact: true }) });
@@ -185,7 +189,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   await expect(page.getByText('OpenCode', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('GLM Coding Plan', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('Antigravity', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Harness and model', exact: true })).not.toContainText('Antigravity'); // not installed in the preview
   await expect(page.getByText('Grok Build', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('MiMo Token Plan', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('GitHub Copilot CLI', { exact: true }).first()).toBeVisible();

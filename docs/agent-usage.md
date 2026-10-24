@@ -10,7 +10,7 @@ The panel opens on **Overview**:
 
 Each agent has a tab with its limit windows, its cost for the period and a year activity calendar.
 
-The browser preview uses labeled sample limits and costs. The desktop reads the current account configured by each harness; this is not an all-account switcher. Limits may include usage from the same account in other applications.
+The browser preview uses labeled sample limits and costs. The desktop reads the account configured by each harness. Named connections (Settings → Providers → Connections) appear separately under their harness's tab, below its **Default setup**: each Claude Code and Codex connection is read through its own config folder and environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, its variables and secrets) with the same readers, and cached by connection and revision (`agent_usage` with `connection`). Connections of other harnesses say their limits are not read separately rather than showing the default account's. Checks still run only when the panel opens or on Refresh. Limits may include usage from the same account in other applications.
 
 ## Estimated API cost
 

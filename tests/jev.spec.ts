@@ -109,6 +109,30 @@ test('Jev settings persist opt-in and never return saved keys to inputs', async 
   await page.screenshot({ path: '/private/tmp/pandacode-jev-settings.png' });
 });
 
+test('OpenRouter decisions list models only when the menu opens and send the key once', async ({ page }) => {
+  await installProbe(page, true);
+  await settings(page);
+  const models = async (provider: string) => (await calls(page, 'jev_decision_models')).filter(entry => entry.args.provider === provider).length;
+  await expect(page.locator('#jev-decision-provider')).toHaveValue('typesafe');
+  await expect(page.locator('#jev-decision-model')).toHaveValue('jev-1.13.0');
+  await expect(page.locator('#jev-openrouter-key')).toBeHidden();
+  await page.locator('#jev-decision-provider').selectOption('openrouter');
+  await expect(page.locator('#jev-openrouter-key')).toBeVisible();
+  expect(await models('openrouter')).toBe(0);
+  await page.locator('#jev-decision-model').focus();
+  await expect.poll(() => models('openrouter')).toBe(1);
+  await expect(page.locator('#jev-decision-model option[value="openai/gpt-4o-mini"]')).toHaveCount(1);
+  await page.locator('#jev-decision-model').selectOption('openai/gpt-4o-mini');
+  await page.locator('[data-jev-models-refresh]').click();
+  await expect.poll(() => models('openrouter')).toBe(2);
+  await page.locator('#jev-openrouter-key').fill('fake-openrouter-test-key');
+  await page.locator('[data-jev-save]').click();
+  await expect.poll(async () => (await calls(page, 'jev_save_configuration')).length).toBe(1);
+  const saved = (await calls(page, 'jev_save_configuration'))[0].args;
+  expect(saved.settings.decisionProvider).toBe('openrouter'); expect(saved.settings.decisionModel).toBe('openai/gpt-4o-mini');
+  expect(saved.openrouterKey).toBe('fake-openrouter-test-key');
+  await expect(page.locator('#jev-openrouter-key')).toHaveValue('');
+});
 test('Jev setup remains editable after errors and shows installation progress', async ({ page }) => {
   await installProbe(page, true); await settings(page);
   await page.evaluate(() => { (window as any).__jevFailSave = true; });

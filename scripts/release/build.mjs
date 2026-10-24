@@ -158,7 +158,8 @@ async function main() {
     await verifyDmg(source, app, releaseVersion);
   }
   if (releaseTarget.startsWith('linux-')) {
-    // Drop the build host's Wayland libraries (see appimage.mjs) and sign the
+    // Drop the build host's Wayland libraries, let GDK_BACKEND be overridden (see
+    // appimage.mjs), and sign the
     // final bytes again, since Tauri signed the image before this rebuild.
     await repackAppImage(source, { log: message => console.log(message) });
     if (build.updater) await run(process.execPath, [tauriCli, 'signer', 'sign', source], { env: await signingEnvironment(build.env) });

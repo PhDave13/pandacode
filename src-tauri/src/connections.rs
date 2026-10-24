@@ -103,6 +103,12 @@ pub fn for_task(session_id: &str, provider: &str) -> Option<Connection> {
     runtime.data.connections.iter().find(|c| &c.id == id && c.provider == provider).cloned()
 }
 
+/// A saved connection by id, for on-demand checks such as usage.
+pub fn get(id: &str) -> Option<Connection> {
+    let runtime = CONFIG.get()?.lock().ok()?;
+    runtime.data.connections.iter().find(|c| c.id == id).cloned()
+}
+
 /// The folder variable each harness reads for its own config and login.
 fn config_dir_var(provider: &str) -> Option<&'static str> {
     match provider {
@@ -346,6 +352,13 @@ pub async fn connection_assign(
     if session_id.is_empty() || session_id.len() > 128 {
         return Err("Unknown task.".into());
     }
+    let current = runtime()?.data.tasks.get(&session_id).cloned();
+    if current != connection_id {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        if store.session(&session_id).is_ok() {
+            fresh_context(&store, &session_id)?;
+        }
+    }
     crate::blocking(move || {
         let mut runtime = runtime()?;
         let mut next = runtime.data.clone();
@@ -354,6 +367,22 @@ pub async fn connection_assign(
         Ok(runtime.data.clone())
     })
     .await
+}
+
+/// A harness session lives in its connection's config folder and cannot be resumed
+/// from another, so the task starts a fresh one and the next message carries the
+/// conversation forward through context recovery, as a harness switch does.
+fn fresh_context(store: &crate::storage::Store, session_id: &str) -> Result<()> {
+    let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+    crate::context_recovery::queue(store, session_id)?;
+    store
+        .db
+        .execute(
+            "UPDATE sessions SET resume_id=NULL,goal_state=NULL,codex_settings=NULL,context_used_tokens=NULL,context_window=NULL WHERE id=?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction.commit().map_err(|e| e.to_string())
 }
 
 fn assign(data: &mut Snapshot, session_id: String, connection_id: Option<String>) -> Result<()> {
@@ -454,6 +483,22 @@ mod tests {
         assert!(missing.contains("API_KEY") && !missing.contains("fixture"));
         let codex = launch_with(&Connection { provider: "codex".into(), secret_env: vec![], ..connection }, |_| None).unwrap();
         assert!(codex.env.contains(&("CODEX_HOME".into(), "/Users/me/.claude-work".into())));
+    }
+
+    #[test]
+    fn changing_connection_starts_a_fresh_harness_session_that_carries_the_conversation() {
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "auto").unwrap();
+        store.message(&task.id, "user", "Earlier request").unwrap();
+        store.message(&task.id, "assistant", "Earlier answer").unwrap();
+        store.resume(&task.id, "session-in-work-config").unwrap();
+        fresh_context(&store, &task.id).unwrap();
+        let task = store.session(&task.id).unwrap();
+        assert_eq!(task.resume_id, None);
+        let (prompt, through) = crate::context_recovery::prepare(&store, &task, "Continue where you left off.").unwrap();
+        assert!(through.is_some());
+        assert!(prompt.contains("Earlier answer") && prompt.contains("Continue where you left off."));
     }
 
     #[test]

@@ -154,16 +154,11 @@ fn parse_version(input: &str) -> Option<Version> {
     })
 }
 
-const PROVIDERS: &[(&str, &str)] = &[
-    ("claude", "Claude Code"),
-    ("codex", "Codex"),
-    ("kimi", "Kimi Code"),
-    ("opencode", "OpenCode"),
-    ("glm", "GLM Coding Plan"),
-    ("antigravity", "Antigravity"),
-    ("grok", "Grok Build"),
-    ("mimo", "MiMo Token Plan"),
-];
+/// Every harness PandaCode can start, so a new one is checked without touching this file.
+use crate::providers::PROVIDERS;
+
+/// Families with a verified release feed and updater; every other agent is listed as manual.
+const UPDATABLE: [&str; 5] = ["claude", "codex", "kimi", "opencode", "grok"];
 
 fn family(provider: &str) -> &str {
     if matches!(provider, "glm" | "mimo") {
@@ -399,7 +394,7 @@ fn base_row(install: &Installation) -> AgentUpdate {
         can_update: false,
         message: None,
         checked_at: crate::storage::now(),
-        docs_url: Some(install::docs(family(&install.provider)).into()),
+        docs_url: install::docs(family(&install.provider)).map(Into::into),
     }
 }
 
@@ -415,6 +410,24 @@ async fn inspect(installation: Installation) -> Checked {
     }
     if family(&installation.provider) == "antigravity" {
         row.message = Some("Antigravity's ACP server is maintained separately from the agy CLI. Use its official installer to update this server.".into());
+        return Checked {
+            install: installation,
+            row,
+            source: None,
+        };
+    }
+    if !UPDATABLE.contains(&family(&installation.provider)) {
+        row.message = Some(
+            "PandaCode cannot update this agent. Use its own updater or package manager.".into(),
+        );
+        let local = installation.clone();
+        if let Ok(Ok(version)) = tokio::task::spawn_blocking(move || {
+            install::version(&local.path, family(&local.provider))
+        })
+        .await
+        {
+            row.installed_version = Some(version.text);
+        }
         return Checked {
             install: installation,
             row,
@@ -765,6 +778,43 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].providers, ["claude", "glm"]);
         assert_eq!(groups[1].providers, ["mimo"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_harness_gets_an_update_row_and_unsupported_ones_stay_manual() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("pandacode-update-all-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let found = PROVIDERS
+            .iter()
+            .map(|(id, name)| {
+                let path = dir.join(id);
+                std::fs::write(&path, "#!/bin/sh\necho 'agent 1.2.3'\n").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                ((*id).into(), (*name).into(), path)
+            })
+            .collect();
+        let groups = group_installations(found);
+        let ids: Vec<_> = groups.iter().map(|group| group.provider.as_str()).collect();
+        assert_eq!(ids, PROVIDERS.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        for group in groups {
+            let family = family(&group.provider).to_owned();
+            if UPDATABLE.contains(&family.as_str()) || family == "antigravity" {
+                continue;
+            }
+            let row = inspect(group).await.row;
+            assert_eq!(row.status, "unsupported", "{}", row.provider);
+            assert_eq!(
+                row.installed_version.as_deref(),
+                Some("1.2.3"),
+                "{}",
+                row.provider
+            );
+            assert!(row.message.is_some() && !row.can_update);
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

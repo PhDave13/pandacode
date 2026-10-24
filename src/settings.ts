@@ -57,8 +57,8 @@ export interface SettingsView { show(section: SettingsSection): void; dispose():
 export const SECTIONS: { id: SettingsSection; label: string; icon: string; description: string }[] = [
   { id: 'general', label: 'General', icon: 'settings', description: 'Text size, conversation density and the quick launcher.' },
   { id: 'appearance', label: 'Appearance', icon: 'sun', description: 'Theme, accent colors and wallpapers.' },
-  { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent, installed agents and their models.' },
-  { id: 'providers', label: 'Providers', icon: 'server', description: 'Connections for Claude Code, GitHub Copilot CLI, GLM, MiMo, OpenCode and Antigravity.' },
+  { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent and the agent harnesses installed on this computer.' },
+  { id: 'providers', label: 'Providers', icon: 'server', description: 'Sign-ins, API keys and plans such as GLM Coding Plan and MiMo Token Plan, each for the agent it belongs to.' },
   { id: 'teams', label: 'Agent teams', icon: 'grid', description: 'Named teams of models, and the classic team setup.' },
   { id: 'tools', label: 'Tools & add-ons', icon: 'widget', description: 'App tools, MCP servers, skills and Jev.' },
   { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on per harness, and check for drift.' },
@@ -67,6 +67,9 @@ export const SECTIONS: { id: SettingsSection; label: string; icon: string; descr
   { id: 'github', label: 'GitHub', icon: 'github', description: 'Issues, pull requests and repositories through the GitHub CLI.' },
   { id: 'about', label: 'About & updates', icon: 'info', description: 'Version, updates, resource usage, license and support.' },
 ];
+
+/** Key-based plans that run through Claude Code; they are set up under Providers, not listed as agents. */
+const PLANS = new Set<ProviderId>(['glm', 'mimo']);
 
 const switchRow = (id: string, title: string, detail: string, checked: boolean) =>
   `<div class="setting-row"><div><strong>${title}</strong><small>${detail}</small></div><input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}></div>`;
@@ -131,7 +134,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   const readinessCleanup: (() => void)[] = [];
   const live = () => !disposed && host.isConnected && !host.hidden;
 
-  function updateProviders(providers: Provider[]): void {
+  function updateProviders(all: Provider[]): void {
+    const providers = all.filter(provider => !PLANS.has(provider.id));
     const rows = new Map(Array.from(list.querySelectorAll<HTMLDetailsElement>('details')).map(row => [row.dataset.provider!, row]));
     for (const [index, provider] of providers.entries()) {
       let row = rows.get(provider.id);

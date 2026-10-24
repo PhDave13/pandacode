@@ -41,15 +41,16 @@ impl Plan {
     }
 }
 
-pub(super) fn docs(provider: &str) -> &'static str {
-    match provider {
+pub(super) fn docs(provider: &str) -> Option<&'static str> {
+    Some(match provider {
         "claude" => "https://code.claude.com/docs/en/setup",
         "codex" => "https://developers.openai.com/codex/cli/",
         "kimi" => "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html",
         "opencode" => "https://opencode.ai/docs/",
         "grok" => "https://docs.x.ai/build",
-        _ => "https://antigravity.google/docs/ide/extensions",
-    }
+        "antigravity" => "https://antigravity.google/docs/ide/extensions",
+        _ => return None,
+    })
 }
 
 fn command(path: &Path) -> Result<Command> {

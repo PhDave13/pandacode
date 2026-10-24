@@ -289,6 +289,9 @@ test('settings organization keeps agent diagnostics collapsed and retains the de
     await row.locator('summary').click();
     await expect(row.locator('code')).toBeHidden();
   }
+  // Key-based plans are set up under Providers, not listed as agents.
+  await expect(dialog(page).locator('.provider-diagnostic[data-provider="kilo"]')).toBeVisible();
+  await expect(dialog(page).locator('.provider-diagnostic[data-provider="glm"], .provider-diagnostic[data-provider="mimo"]')).toHaveCount(0);
   const defaultAgent = page.getByRole('button', { name: 'Default agent for new tasks', exact: true });
   await defaultAgent.click();
   await page.getByRole('dialog', { name: 'Default agent', exact: true }).getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();

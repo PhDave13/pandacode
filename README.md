@@ -141,7 +141,9 @@ information:
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com` | About every 6 hours |
 | Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
-| PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours; turn off in Settings → About |
+| PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
+| Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
+| Jev decisions on OpenRouter (optional) | `openrouter.ai` | Only when you choose OpenRouter in Settings → Agents → Jev and run a decision check; sends the selected evidence with your key |
 | Cloud agents (optional): the task's checkout, prompt and harness login go to the machine you chose; PandaCode checks on its active runs | The cloud provider you connected | Only for tasks you start on a cloud provider; while a run is active and at launch to re-attach |
 | PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Remote access; nothing before |
 
@@ -177,12 +179,17 @@ Release builds are not code-signed, so your OS will warn the first time:
 - **Windows:** if SmartScreen appears, click **More info → Run anyway**.
 - **Linux:** `chmod +x PandaCode-Linux-x86_64.AppImage` (or `-aarch64`), then run it. Some
   distributions need FUSE 2 (`libfuse2`), or set `APPIMAGE_EXTRACT_AND_RUN=1`.
+  The AppImage runs through X11 (XWayland on Wayland) by default; if the window
+  stays blank there, try GTK's native Wayland backend with
+  `GDK_BACKEND=wayland ./PandaCode-Linux-x86_64.AppImage`.
 
 Each file has a `.sha256` checksum beside it. Once installed, PandaCode updates
 itself: it checks the latest release, downloads a newer version in the background,
 verifies its signature, and restarts to install it when no agent is working and
-you've stepped away (or when you click **Restart to update**). Turn this off in
-Settings → About. See [platform support](docs/platform-support.md) for details.
+you've stepped away (or when you click **Restart to update**). In Settings → About,
+**Notify me** checks but asks first (**Install and restart** / **Later**), and **Off**
+stops checking. On Linux only the AppImage updates itself; an unpacked AppImage or a
+package just reports new versions. See [platform support](docs/platform-support.md) for details.
 
 Then install Git and at least one coding CLI and sign in with its normal login.
 PandaCode does not include provider plans or usage.

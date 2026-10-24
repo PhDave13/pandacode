@@ -129,20 +129,25 @@ pub(crate) struct ControlClient {
 
 impl ControlClient {
     pub(crate) async fn start(cwd: &Path) -> Result<Self, String> {
-        Self::start_configured(cwd, false).await
+        Self::start_configured(cwd, false, &[]).await
+    }
+
+    /// Like `start`, with a named connection's variables (such as `CODEX_HOME`).
+    pub(crate) async fn start_with_env(cwd: &Path, env: &[(String, String)]) -> Result<Self, String> {
+        Self::start_configured(cwd, false, env).await
     }
 
     pub(crate) async fn start_with_goals(cwd: &Path) -> Result<Self, String> {
-        Self::start_configured(cwd, true).await
+        Self::start_configured(cwd, true, &[]).await
     }
 
-    async fn start_configured(cwd: &Path, goals: bool) -> Result<Self, String> {
+    async fn start_configured(cwd: &Path, goals: bool, env: &[(String, String)]) -> Result<Self, String> {
         let permit = discovery_limit()
             .try_acquire()
             .map_err(|_| "Codex command discovery is busy. Try again in a moment.".to_owned())?;
         let path = executable("codex").ok_or("Install Codex to use this command")?;
         let mut command = crate::providers::command(&path)?;
-        command.arg("app-server");
+        command.arg("app-server").envs(env.iter().map(|(k, v)| (k, v)));
         if goals {
             command.args(["--enable", "goals"]);
         }
