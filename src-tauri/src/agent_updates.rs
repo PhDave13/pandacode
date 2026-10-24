@@ -158,7 +158,7 @@ fn parse_version(input: &str) -> Option<Version> {
 use crate::providers::PROVIDERS;
 
 /// Families with a verified release feed and updater; every other agent is listed as manual.
-const UPDATABLE: [&str; 5] = ["claude", "codex", "kimi", "opencode", "grok"];
+const UPDATABLE: [&str; 6] = ["claude", "codex", "kimi", "opencode", "grok", "cline"];
 
 fn family(provider: &str) -> &str {
     if matches!(provider, "glm" | "mimo") {
@@ -287,6 +287,7 @@ fn metadata_endpoint(source: &str) -> Option<(&'static str, &'static str)> {
             "tag_name",
         )),
         "npm:opencode" => Some(("https://registry.npmjs.org/opencode-ai/latest", "version")),
+        "npm:cline" => Some(("https://registry.npmjs.org/cline/latest", "version")),
         "kimi" => Some(("https://cdn.kimi.com/kimi-code/latest", "text")),
         "kimi-python" => Some(("https://pypi.org/pypi/kimi-cli/json", "info.version")),
         "grok" => Some((
