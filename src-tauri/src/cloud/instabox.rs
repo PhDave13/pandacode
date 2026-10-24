@@ -7,9 +7,16 @@
 //! each command runs from a script on the machine with its output in a file: small output
 //! comes back in the same call, larger output is read back in 128 KiB pieces keeping the
 //! tail. Longer commands run detached and are polled for an exit-code file.
+//!
+//! New machines start from the image chosen in Settings → Cloud (`snapshotId` or `template`
+//! in `Settings.providers["instabox"]`), else from agent-browser.
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::Serialize;
 use serde_json::{json, Value};
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use super::{http, sandbox::{checked, download_command, Info, Sandbox}, Machine};
 use crate::Result;
@@ -17,7 +24,7 @@ use crate::Result;
 const SERVICE: &str = "InstaBox";
 const DEFAULT_API: &str = "https://api.instabox.sh/v1";
 const KEY: &str = "instabox_key";
-/// The template the free plan allows.
+/// The default template, and the only one the free plan creates from.
 const TEMPLATE: &str = "agent-browser";
 /// Metadata on every machine PandaCode creates; `list` shows only these.
 const LABEL: (&str, &str) = ("created-by", "pandacode");
@@ -33,7 +40,8 @@ const PIECE: usize = 128 * 1024;
 const LEASE_MAX: u64 = 3600;
 /// PandaCode's lease on each machine (`PUT /machines/{id}/activity-leases/{lease}`).
 const LEASE: &str = "pandacode";
-const OPERATION_MAX: Duration = Duration::from_secs(600);
+/// A create from a snapshot with storage took 93–560 s live (from a template: seconds).
+const OPERATION_MAX: Duration = Duration::from_secs(20 * 60);
 const POLL: Duration = if cfg!(test) { Duration::from_millis(10) } else { Duration::from_secs(3) };
 
 /// A pause freezes every process, and after a resume clients still reuse keep-alive sockets
@@ -59,6 +67,43 @@ setsid nohup sh "$d/reconnect.sh" > /dev/null 2>&1 < /dev/null &"#;
 pub struct InstaBox {
     api: String,
     key: String,
+    /// What new machines start from: (`templateId` or `snapshotId`, ID).
+    image: (&'static str, String),
+}
+
+/// A machine image the Settings → Cloud select offers; `value` is `template:<id>` or
+/// `snapshot:<id>`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Image {
+    pub value: String,
+    pub label: String,
+}
+#[derive(Debug, Serialize)]
+pub struct Images {
+    pub images: Vec<Image>,
+    /// The saved choice, as an `Image::value`.
+    pub selected: String,
+}
+
+/// The create field and ID for the image saved in `Settings.providers["instabox"]`.
+fn saved_image(options: Option<&BTreeMap<String, String>>) -> (&'static str, String) {
+    let saved = |name: &str| options.and_then(|o| o.get(name)).filter(|id| !id.is_empty()).cloned();
+    match (saved("snapshotId"), saved("template")) {
+        (Some(id), _) => ("snapshotId", id),
+        (None, Some(id)) => ("templateId", id),
+        (None, None) => ("templateId", TEMPLATE.into()),
+    }
+}
+fn image_value((field, id): &(&'static str, String)) -> String {
+    format!("{}:{id}", if *field == "snapshotId" { "snapshot" } else { "template" })
+}
+/// What `set_image` saves for an image value: snapshotId or template (none for agent-browser).
+fn image_options(value: &str) -> Option<(&'static str, &str)> {
+    match value.split_once(':')? {
+        ("snapshot", id) => Some(("snapshotId", id)),
+        ("template", id) if id != TEMPLATE => Some(("template", id)),
+        _ => None,
+    }
 }
 
 fn machine(vm: &Value) -> Machine {
@@ -78,7 +123,7 @@ fn machine(vm: &Value) -> Machine {
         state: state.into(),
         os: "linux".into(),
         desktop: false,
-        detail: format!("InstaBox · {}", vm["templateId"].as_str().unwrap_or(TEMPLATE)),
+        detail: format!("InstaBox · {}", vm["snapshot"]["id"].as_str().or(vm["template"]["id"].as_str()).unwrap_or(TEMPLATE)),
     }
 }
 
@@ -95,7 +140,7 @@ fn report(file: &str) -> String {
 
 impl InstaBox {
     pub fn new(api: Option<String>, key: String) -> Self {
-        InstaBox { api: api.unwrap_or_else(|| DEFAULT_API.into()).trim_end_matches('/').to_string(), key }
+        InstaBox { api: api.unwrap_or_else(|| DEFAULT_API.into()).trim_end_matches('/').to_string(), key, image: ("templateId", TEMPLATE.into()) }
     }
     async fn call(&self, method: reqwest::Method, path: &str, body: Option<Value>, timeout: Duration) -> Result<Value> {
         let mut request = http::client(timeout)?.request(method.clone(), format!("{}{path}", self.api)).header("X-API-Key", &self.key);
@@ -141,7 +186,8 @@ impl InstaBox {
         }
     }
     async fn create(&self, name: &str) -> Result<Machine> {
-        let body = json!({"name": name, "templateId": TEMPLATE, "metadata": {LABEL.0: LABEL.1}});
+        let mut body = json!({"name": name, "metadata": {LABEL.0: LABEL.1}});
+        body[self.image.0] = self.image.1.as_str().into();
         let operation = self.call(reqwest::Method::POST, "/machines", Some(body), Duration::from_secs(60)).await?;
         let id = operation["machineId"].as_str().map(str::to_string);
         let done = self.settle(operation).await?;
@@ -183,6 +229,38 @@ impl InstaBox {
         // A key with only `machines:exec` may lease but not PATCH; the lease is what counts.
         let _ = self.call(reqwest::Method::PATCH, &format!("/machines/{id}"), Some(json!({"autoSuspendAfterSeconds": seconds.clamp(120, 86_400)})), Duration::from_secs(30)).await;
         checked(self.exec(id, RECONNECT, Duration::from_secs(30)).await?)
+    }
+    /// What new machines can start from: agent-browser, the account's ready snapshots, and
+    /// other templates when the org new machines go to (the key's workspace, else the
+    /// personal one) is on a paid plan; the free plan creates from agent-browser only.
+    async fn images(&self) -> Result<Vec<Image>> {
+        let get = |path: &'static str| self.call(reqwest::Method::GET, path, None, Duration::from_secs(30));
+        let (snapshots, me, orgs) = (get("/snapshots").await?, get("/me").await?, get("/orgs").await?);
+        let mut images = vec![Image { value: format!("template:{TEMPLATE}"), label: format!("{TEMPLATE} (default, includes the open-computer-use desktop tool)") }];
+        images.extend(snapshots["snapshots"].as_array().into_iter().flatten().filter(|s| s["status"] == "ready").filter_map(|s| {
+            let id = s["id"].as_str()?;
+            Some(Image { value: format!("snapshot:{id}"), label: format!("{} · {id}", s["name"].as_str().filter(|n| !n.is_empty()).unwrap_or("snapshot")) })
+        }));
+        let home = orgs["orgs"].as_array().into_iter().flatten().find(|org| match me["orgId"].as_str() {
+            Some(workspace) => org["id"] == workspace,
+            None => org["personal"] == true,
+        });
+        if home.is_some_and(|org| org["tier"].as_str().is_some_and(|tier| tier != "free")) {
+            let templates = get("/templates").await?;
+            let mut ids: Vec<&str> = templates["templates"].as_array().into_iter().flatten().filter(|t| t["hidden"] != true).filter_map(|t| t["id"].as_str()).filter(|id| *id != TEMPLATE).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            images.extend(ids.into_iter().map(|id| Image { value: format!("template:{id}"), label: id.to_string() }));
+        }
+        Ok(images)
+    }
+    /// The images, when `value` is one of them.
+    async fn check_image(&self, value: &str) -> Result<Vec<Image>> {
+        let images = self.images().await?;
+        if !images.iter().any(|image| image.value == value) {
+            return Err("InstaBox can't create machines from that image on this account. Pick another one.".into());
+        }
+        Ok(images)
     }
     /// One `exec` call; the reply's stdout, or None when InstaBox stopped it at `seconds`.
     async fn run(&self, id: &str, cmd: &str, stdin: Option<&str>, seconds: u64) -> Result<Option<String>> {
@@ -291,9 +369,32 @@ pub fn disconnect() -> Result<()> {
     settings.providers.remove("instabox");
     super::save_settings(&settings)
 }
-pub fn sandbox() -> Result<Box<dyn Sandbox>> {
+fn connected() -> Result<InstaBox> {
     let key = super::secret(KEY).ok_or("Connect InstaBox in Settings → Cloud first.")?;
-    Ok(Box::new(InstaBox::new(None, key)))
+    let mut instabox = InstaBox::new(None, key);
+    instabox.image = saved_image(super::settings().providers.get("instabox"));
+    Ok(instabox)
+}
+pub fn sandbox() -> Result<Box<dyn Sandbox>> {
+    Ok(Box::new(connected()?))
+}
+/// The machine images for Settings → Cloud, with the saved one.
+pub fn images() -> Result<Images> {
+    let instabox = connected()?;
+    Ok(Images { images: http::block(instabox.images())?, selected: image_value(&instabox.image) })
+}
+/// Save the image new machines start from, once InstaBox shows the account can use it.
+pub fn set_image(value: &str) -> Result<Images> {
+    let images = http::block(connected()?.check_image(value))?;
+    let mut settings = super::settings();
+    let options = settings.providers.entry("instabox".into()).or_default();
+    options.remove("snapshotId");
+    options.remove("template");
+    if let Some((name, id)) = image_options(value) {
+        options.insert(name.into(), id.into());
+    }
+    super::save_settings(&settings)?;
+    Ok(Images { images, selected: value.into() })
 }
 
 #[cfg(test)]
@@ -317,6 +418,11 @@ mod tests {
     }
 
     fn instabox() -> (InstaBox, mock::Seen) {
+        instabox_on("free")
+    }
+
+    /// The API for an account whose new machines go to a workspace on `tier`.
+    fn instabox_on(tier: &'static str) -> (InstaBox, mock::Seen) {
         let (polls, operations) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
         let (base, seen) = mock::serve(move |request, _| -> (u16, Vec<u8>) {
             let body: Value = serde_json::from_str(&request.body).unwrap_or_default();
@@ -325,7 +431,14 @@ mod tests {
             match (request.method.as_str(), request.path.as_str()) {
                 ("GET", "/v1/machines?metadata=created-by%3Apandacode") => text(r#"{"machines":[{"id":"m_1","name":"pc-a","state":"running","runtime":{"ready":true},"metadata":{"created-by":"pandacode"}},{"id":"m_9","name":"other","state":"running"}],"nextCursor":"c/2"}"#),
                 ("GET", "/v1/machines?metadata=created-by%3Apandacode&cursor=c%2F2") => text(r#"{"machines":[{"id":"m_2","name":"","state":"suspended","metadata":{"created-by":"pandacode"}}],"nextCursor":null}"#),
+                // From a snapshot, the new machine is m_4.
+                ("POST", "/v1/machines") if request.body.contains("snapshotId") => (202, br#"{"id":"op_4","machineId":"m_4","type":"create","state":"succeeded"}"#.to_vec()),
                 ("POST", "/v1/machines") => (202, br#"{"id":"op_1","machineId":"m_3","type":"create","state":"pending"}"#.to_vec()),
+                ("GET", "/v1/machines/m_4") => text(r#"{"id":"m_4","name":"pc-snap","state":"running","snapshot":{"id":"sn_ok"},"template":{"id":"agent-browser"}}"#),
+                ("GET", "/v1/snapshots") => text(r#"{"snapshots":[{"id":"sn_ok","name":"clean","status":"ready"},{"id":"sn_new","name":"half","status":"pending"},{"id":"sn_x","name":"","status":"ready"}]}"#),
+                ("GET", "/v1/me") => text(r#"{"login":"octo","orgId":"org_w","manualLifecycle":false}"#),
+                ("GET", "/v1/orgs") => text(&format!(r#"{{"orgs":[{{"id":"org_p","personal":true,"tier":"free"}},{{"id":"org_w","personal":false,"tier":"{tier}"}}]}}"#)),
+                ("GET", "/v1/templates") => text(r#"{"templates":[{"id":"agent-browser"},{"id":"herdr","version":"1"},{"id":"herdr","version":"2"},{"id":"base","hidden":true},{"id":"universal"}]}"#),
                 ("GET", "/v1/operations/op_1") if operations.fetch_add(1, Ordering::SeqCst) == 0 => text(r#"{"id":"op_1","machineId":"m_3","state":"running"}"#),
                 ("GET", "/v1/operations/op_1") => text(r#"{"id":"op_1","machineId":"m_3","state":"succeeded"}"#),
                 ("GET", "/v1/machines/m_3") => text(r#"{"id":"m_3","name":"pc-new","state":"running","runtime":{"ready":false}}"#),
@@ -415,6 +528,49 @@ mod tests {
         });
         let error = InstaBox::new(Some(format!("{base}/v1")), "test-key".into()).keep_alive("m_1", 60).await.unwrap_err();
         assert!(error.contains("read-only"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn offers_agent_browser_ready_snapshots_and_templates_only_on_a_paid_plan() {
+        let values = |images: &[Image]| images.iter().map(|i| i.value.clone()).collect::<Vec<_>>();
+        let (free, seen) = instabox_on("free");
+        let images = free.images().await.unwrap();
+        assert_eq!(values(&images), ["template:agent-browser", "snapshot:sn_ok", "snapshot:sn_x"]);
+        assert_eq!(images[0].label, "agent-browser (default, includes the open-computer-use desktop tool)");
+        assert_eq!((images[1].label.as_str(), images[2].label.as_str()), ("clean · sn_ok", "snapshot · sn_x"));
+        assert!(seen.lock().unwrap().iter().all(|r| r.path != "/v1/templates"), "free plans never list templates");
+        // The key's workspace is on Pro (its personal org stays free): every visible template.
+        let (pro, _) = instabox_on("pro");
+        assert_eq!(values(&pro.images().await.unwrap()), ["template:agent-browser", "snapshot:sn_ok", "snapshot:sn_x", "template:herdr", "template:universal"]);
+
+        for refused in ["template:herdr", "snapshot:sn_new", "snapshot:sn_gone", "template:base", "sn_ok", ""] {
+            assert!(free.check_image(refused).await.unwrap_err().contains("can't create machines from that image"), "{refused}");
+        }
+        free.check_image("snapshot:sn_ok").await.unwrap();
+        pro.check_image("template:herdr").await.unwrap();
+        assert!(pro.check_image("template:base").await.is_err(), "hidden templates can't be chosen");
+    }
+
+    #[tokio::test]
+    async fn new_machines_start_from_the_saved_snapshot_or_template() {
+        let saved = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        for (value, stored) in [("snapshot:sn_ok", Some(("snapshotId", "sn_ok"))), ("template:herdr", Some(("template", "herdr"))), ("template:agent-browser", None)] {
+            assert_eq!(image_options(value), stored, "{value}");
+            let options = saved(&stored.map(|s| vec![s]).unwrap_or_default());
+            assert_eq!(image_value(&saved_image(Some(&options))), value, "round trip");
+        }
+        assert_eq!(saved_image(None), ("templateId", TEMPLATE.into()));
+        assert_eq!(saved_image(Some(&saved(&[("snapshotId", "sn_ok"), ("template", "herdr")]))), ("snapshotId", "sn_ok".into()), "a snapshot wins");
+
+        let (mut instabox, seen) = instabox();
+        instabox.image = saved_image(Some(&saved(&[("snapshotId", "sn_ok")])));
+        let made = instabox.create("pc-snap").await.unwrap();
+        assert_eq!((made.id.as_str(), made.state.as_str(), made.detail.as_str()), ("instabox:m_4", "running", "InstaBox · sn_ok"));
+        instabox.image = saved_image(Some(&saved(&[("template", "herdr")])));
+        instabox.create("pc-new").await.unwrap();
+        let log = seen.lock().unwrap();
+        let creates: Vec<Value> = log.iter().filter(|r| r.method == "POST" && r.path == "/v1/machines").map(|r| serde_json::from_str(&r.body).unwrap()).collect();
+        assert_eq!(creates, vec![json!({"name": "pc-snap", "snapshotId": "sn_ok", "metadata": {"created-by": "pandacode"}}), json!({"name": "pc-new", "templateId": "herdr", "metadata": {"created-by": "pandacode"}})]);
     }
 
     #[tokio::test]

@@ -126,6 +126,46 @@ test('Settings → Cloud connects keyed providers and saves a Claude token', asy
   await expect(settings.locator('.cloud-claude .info-mark')).toHaveAttribute('data-tip', /claude setup-token/);
 });
 
+test('InstaBox offers a machine image select once connected and saves the choice', async ({ page }) => {
+  await newTask(page);
+  let settings = await openCloudSettings(page);
+  const card = settings.locator('.cloud-provider[data-provider="instabox"]');
+  const image = card.getByRole('combobox', { name: 'InstaBox machine image' });
+  await expect(image).toBeHidden();
+  await card.getByRole('button', { name: 'Connect InstaBox', exact: true }).click();
+  await settings.getByLabel('InstaBox API key').fill('preview-key');
+  await settings.getByRole('form', { name: 'Connect InstaBox' }).locator('[type="submit"]').click();
+  await expect(image).toBeEnabled();
+  await expect(image).toHaveValue('template:agent-browser');
+  await expect(image.locator('option')).toHaveText(['agent-browser (default, includes the open-computer-use desktop tool)', 'clean-agents · sn_preview1']);
+
+  await image.selectOption('snapshot:sn_preview1');
+  await expect(card.locator('.cloud-image-status')).toHaveText('Saved. New machines start from clean-agents · sn_preview1.');
+  // The choice is kept natively, so a reopened Settings shows it.
+  await settings.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
+  settings = await openCloudSettings(page);
+  await expect(settings.getByRole('combobox', { name: 'InstaBox machine image' })).toHaveValue('snapshot:sn_preview1');
+
+  await settings.getByRole('button', { name: 'Disconnect InstaBox', exact: true }).click();
+  await expect(settings.getByRole('combobox', { name: 'InstaBox machine image' })).toBeHidden();
+});
+
+test('a machine image list that fails to load says why and can be retried', async ({ page }) => {
+  await page.addInitScript(() => { (window as any).__instaboxImagesFail = true; });
+  await newTask(page);
+  const settings = await openCloudSettings(page);
+  const card = settings.locator('.cloud-provider[data-provider="instabox"]');
+  await card.getByRole('button', { name: 'Connect InstaBox', exact: true }).click();
+  await settings.getByLabel('InstaBox API key').fill('preview-key');
+  await settings.getByRole('form', { name: 'Connect InstaBox' }).locator('[type="submit"]').click();
+  await expect(card.getByRole('alert').filter({ hasText: 'machine images' })).toHaveText('Could not load machine images: InstaBox did not answer in time.');
+  await expect(card.getByRole('combobox', { name: 'InstaBox machine image' })).toBeDisabled();
+  await page.evaluate(() => { (window as any).__instaboxImagesFail = false; });
+  await card.getByRole('button', { name: 'Try again' }).click();
+  await expect(card.getByRole('combobox', { name: 'InstaBox machine image' })).toHaveValue('template:agent-browser');
+  await expect(card.getByRole('button', { name: 'Try again' })).toBeHidden();
+});
+
 test('switching tasks while a machine prepares keeps the strip and chip with the cloud task', async ({ page }) => {
   await startOnE2b(page, 'Prepare in the background');
   const cloudRow = page.locator('#navigation .task-item', { has: page.locator('.task-cloud') });

@@ -80,6 +80,8 @@ change emits `cloud-agent://progress` `{sessionId, stage, detail}` plus
   stays and will recreate one on the next prompt), `open` (select the machine in the VM
   panel).
 - Follow-ups, stop, approvals, input, steering: the ordinary commands.
+- `cloud_instabox_images() → {images: [{value, label}], selected}` and
+  `cloud_instabox_set_image({image}) → same` — the InstaBox machine image (below).
 
 ## Provider settings
 
@@ -95,7 +97,7 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | tensorlake | API key | — |
 | freestyle | API key | — |
 | boat | API key | `apiUrl` |
-| instabox | API key | — (machines from the `agent-browser` template; `exec` output is read back from a file because InstaBox keeps only its first 1 MiB; at most 60 unattended minutes) |
+| instabox | API key | — (machines start from the image chosen after connecting, see [InstaBox](#instabox); `exec` output is read back from a file because InstaBox keeps only its first 1 MiB; at most 60 unattended minutes) |
 | vercel | (existing deploy token) | `projectId` and `teamId` for Sandbox, saved in `Settings.providers["vercel"]` |
 | railway | (existing deploy token) | `workspace` (existing) |
 | gcloud | (gcloud CLI login) | `zone` for Compute Engine VMs, saved in `Settings.providers["gcloud"]` |
@@ -104,6 +106,35 @@ Non-secret options live in `cloud::Settings.providers[<id>]`; a `detail` entry t
 shown in Settings. Secrets use `cloud::set_secret("<id>_key", …)`.
 
 ## InstaBox
+
+**Machine image.** Once InstaBox is connected, its card in Settings → Cloud has a
+Machine image select filled from the API: `agent-browser` (the default), the account's
+`ready` snapshots (name · ID), and other templates only when the org new machines go to
+(the key's workspace, else the personal org, `GET /v1/orgs` `tier`) is on a paid plan;
+the free plan creates from `agent-browser` only (`403 template_not_allowed`). The choice is
+saved as `snapshotId` or `template` in `Settings.providers["instabox"]`, and
+`cloud_instabox_set_image` saves only a value the account's current list offers. It
+applies to machines created afterwards. A create from a snapshot with storage restores
+it first and took between 1.5 and 10 minutes live (from a template: seconds).
+
+**A snapshot without the desktop tool.** `agent-browser` ships an `open-computer-use`
+MCP server in `~/.claude.json`, which agents sometimes reach for instead of Bash. To get
+machines without it:
+
+1. Create a machine from `agent-browser` in the InstaBox dashboard.
+2. In its terminal, remove the server (Codex has no such entry):
+
+   ```sh
+   jq 'del(.mcpServers["open-computer-use"])' ~/.claude.json > ~/.claude.json.new \
+     && mv ~/.claude.json.new ~/.claude.json && chmod 600 ~/.claude.json
+   ```
+
+   Install anything else every task should have, but sign in to nothing: a snapshot keeps
+   HOME (`/data/home`), credentials included.
+3. Stop the machine, then save a snapshot of it (dashboard, or
+   `POST /v1/machines/{id}/snapshots` with `{"name": "clean-agents"}`; a stopped
+   machine's snapshot is ready at once). The source machine can then be deleted.
+4. Pick `clean-agents · sn_…` as the Machine image in Settings → Cloud.
 
 **Staying awake.** `keep_alive` takes an activity lease
 (`PUT /v1/machines/{id}/activity-leases/pandacode`, at most 3600 s), which also wakes a

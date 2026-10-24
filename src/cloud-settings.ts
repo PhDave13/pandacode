@@ -68,6 +68,9 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
     note: `Create a key at ${provider.docs}. Cloud agents run on machines in your own account.`, connect: 'Connect',
   }])) as Record<KeyedProvider, { name: string; summary: string; key?: Field; fields: Field[]; note: string; connect: string }>,
 };
+/** `cloud_instabox_images`: what new InstaBox machines can start from, and the saved choice. */
+type InstaboxImages = { images: { value: string; label: string }[]; selected: string };
+const IMAGE_HELP = 'New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.';
 const CLAUDE_TOKEN_HELP = 'Run `claude setup-token` and paste the long-lived token it prints. Without one, PandaCode copies this computer’s Claude Code login to the machine before each run.';
 
 export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost): () => void {
@@ -84,7 +87,13 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const fields = [...(provider.key ? [provider.key] : []), ...provider.fields];
     return `<div class="cloud-provider" data-provider="${id}">
       <div class="setting-row"><div><strong>${escape(provider.name)}</strong><small class="cloud-detail">${escape(provider.summary)}</small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div></div>
-      <p class="cloud-progress cloud-row-status" role="status" hidden></p>
+      <p class="cloud-progress cloud-row-status" role="status" hidden></p>${id === 'instabox' ? `
+      <div class="cloud-image" hidden>
+        <div class="cloud-image-row"><label><span>Machine image</span><select aria-label="InstaBox machine image" disabled></select></label>${infoMark(IMAGE_HELP, 'About machine images')}</div>
+        <p class="cloud-image-status" role="status" hidden></p>
+        <p class="cloud-image-error" role="alert" hidden></p>
+        <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="images">Try again</button></div>
+      </div>` : ''}
       <form class="cloud-form" hidden novalidate aria-label="${escape(`Connect ${provider.name}`)}">
         ${fields.map(field => `<label><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
         <p class="cloud-note">${escape(provider.note)}</p>
@@ -115,7 +124,45 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   }
   async function load(): Promise<void> {
     try { connections = await options.call<CloudConnection[]>('cloud_connections'); } catch { connections = []; }
-    if (!disposed) render();
+    if (!disposed) { render(); syncImages(); }
+  }
+
+  /* InstaBox's machine image select, filled from the API once InstaBox is connected. */
+  let images: InstaboxImages | null = null, imagesError = '', imagesLoading = false, imageSaving = false;
+  function renderImages(): void {
+    const root = section('instabox'), box = root.querySelector<HTMLElement>('.cloud-image')!;
+    const select = box.querySelector('select')!, status = box.querySelector<HTMLElement>('.cloud-image-status')!;
+    const error = box.querySelector<HTMLElement>('.cloud-image-error')!, retry = box.querySelector<HTMLElement>('.cloud-actions')!;
+    box.hidden = !connections.find(c => c.provider === 'instabox')?.connected;
+    select.innerHTML = images ? images.images.map(image => `<option value="${escape(image.value)}">${escape(image.label)}</option>`).join('') : `<option>${imagesLoading ? 'Loading images…' : 'Not available'}</option>`;
+    if (images) select.value = images.selected;
+    select.disabled = !images || imageSaving;
+    error.textContent = imagesError; error.hidden = !imagesError;
+    retry.hidden = Boolean(images) || imagesLoading || !imagesError;
+    if (!images || imagesError) status.hidden = true;
+  }
+  async function loadImages(): Promise<void> {
+    imagesLoading = true; imagesError = ''; renderImages();
+    try { images = await options.call<InstaboxImages>('cloud_instabox_images'); }
+    catch (error) { images = null; imagesError = `Could not load machine images: ${error instanceof Error ? error.message : String(error)}`; }
+    finally { imagesLoading = false; if (!disposed) renderImages(); }
+  }
+  function syncImages(): void {
+    if (!connections.find(c => c.provider === 'instabox')?.connected) { images = null; imagesError = ''; renderImages(); return; }
+    if (!images && !imagesLoading) void loadImages();
+  }
+  async function saveImage(select: HTMLSelectElement): Promise<void> {
+    if (!images) return;
+    const status = section('instabox').querySelector<HTMLElement>('.cloud-image-status')!, value = select.value;
+    imageSaving = true; imagesError = ''; status.hidden = false; status.textContent = 'Checking…'; renderImages();
+    select.value = value;
+    try {
+      images = await options.call<InstaboxImages>('cloud_instabox_set_image', { image: value });
+      status.textContent = `Saved. New machines start from ${images.images.find(image => image.value === images!.selected)?.label ?? images.selected}.`;
+    } catch (error) {
+      status.hidden = true;
+      imagesError = error instanceof Error ? error.message : String(error);
+    } finally { imageSaving = false; if (!disposed) renderImages(); }
   }
   function say(root: HTMLElement, kind: 'progress' | 'error', text: string): void {
     const line = root.querySelector<HTMLElement>(`.cloud-${kind}`)!;
@@ -135,7 +182,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       say(root, 'progress', '');
     } catch (error) {
       if (!disposed) { say(root, 'progress', ''); say(root, 'error', error instanceof Error ? error.message : String(error)); }
-    } finally { busy = ''; if (!disposed) render(); }
+    } finally { busy = ''; if (!disposed) { render(); syncImages(); } }
   }
   async function setupSandboxes(root: HTMLElement): Promise<void> {
     const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
@@ -155,7 +202,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     busy = id; render();
     try { connections = await options.call<CloudConnection[]>('cloud_disconnect', { provider: id }); }
     catch (error) { say(section(id), 'error', error instanceof Error ? error.message : String(error)); }
-    finally { busy = ''; if (!disposed) render(); }
+    finally { busy = ''; if (!disposed) { render(); syncImages(); } }
   }
 
   host.addEventListener('click', event => {
@@ -165,6 +212,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const form = root.querySelector<HTMLFormElement>('form')!;
     if (target.dataset.cloud === 'cancel') { form.hidden = true; say(root, 'error', ''); render(); return; }
     if (target.dataset.cloud === 'sandboxes') { void setupSandboxes(root); return; }
+    if (target.dataset.cloud === 'images') { void loadImages(); return; }
     if (connections.find(c => c.provider === id)?.connected) { void disconnect(id); return; }
     form.hidden = !form.hidden;
     render();
@@ -176,6 +224,9 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     if (form.classList.contains('cloud-claude-form')) { void saveClaudeToken(form); return; }
     const id = form.closest<HTMLElement>('.cloud-provider')!.dataset.provider as CloudConnection['provider'];
     void connect(id, form);
+  });
+  host.addEventListener('change', event => {
+    if (event.target instanceof HTMLSelectElement && event.target.closest('.cloud-image')) void saveImage(event.target);
   });
   host.addEventListener('keydown', event => {
     const form = (event.target as Element).closest?.('.cloud-provider[data-provider] form.cloud-form') as HTMLFormElement | null;

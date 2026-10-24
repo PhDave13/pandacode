@@ -265,6 +265,18 @@ pub async fn cloud_disconnect(app: AppHandle, provider: String) -> Result<Vec<Co
     .await
 }
 
+/// The images new InstaBox machines can start from, for Settings → Cloud.
+#[tauri::command]
+pub async fn cloud_instabox_images() -> Result<super::instabox::Images> {
+    crate::blocking(super::instabox::images).await
+}
+
+/// Choose the image (`template:<id>` or `snapshot:<id>` from `cloud_instabox_images`).
+#[tauri::command]
+pub async fn cloud_instabox_set_image(image: String) -> Result<super::instabox::Images> {
+    crate::blocking(move || super::instabox::set_image(&image)).await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Machines {

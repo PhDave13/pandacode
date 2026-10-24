@@ -13,3 +13,12 @@
 .cloud-buttons{display:flex;gap:6px;align-items:center}
 .cloud-row-status{margin:-.3rem 1rem .7rem;font-size:.74rem;color:var(--muted)}
 .cloud-row-status.cloud-error{color:var(--danger)}
+.cloud-image{display:flex;flex-direction:column;gap:6px;margin:-.3rem 1rem .8rem}
+.cloud-image-row{display:flex;align-items:center;gap:6px}
+.cloud-image label{display:flex;flex:1;min-width:0;align-items:center;gap:10px;font-size:.8rem}
+.cloud-image label>span{flex:none;width:7.5rem;color:var(--muted)}
+.cloud-image select{flex:1;min-width:0;height:32px;padding:0 8px;border-radius:3px;border:1px solid color-mix(in srgb,var(--text) 12%,transparent);background:color-mix(in srgb,var(--text) 4%,transparent);color:var(--text);font:inherit;font-size:.82rem}
+.cloud-image select:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.cloud-image select:disabled{opacity:.6}
+.cloud-image-status{margin:0;font-size:.74rem;color:var(--muted)}
+.cloud-image-error{margin:0;font-size:.74rem;color:var(--danger)}

@@ -3598,6 +3598,8 @@ pub fn run() {
                 cloud::commands::cloud_connect,
                 cloud::commands::cloud_disconnect,
                 cloud::commands::cloud_setup_sandboxes,
+                cloud::commands::cloud_instabox_images,
+                cloud::commands::cloud_instabox_set_image,
                 cloud::commands::cloud_machines,
                 cloud::commands::cloud_create,
                 cloud::commands::cloud_power,

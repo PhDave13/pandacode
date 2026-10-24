@@ -1316,6 +1316,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'cloud_connect': result = previewCloud.connect(args.provider, args.key, args.options ?? {}); emit('vm-changed', {}); break;
     case 'cloud_disconnect': result = previewCloud.disconnect(args.provider); emit('vm-changed', {}); break;
     case 'cloud_setup_sandboxes': result = previewCloud.setupSandboxes(); emit('vm-changed', {}); break;
+    case 'cloud_instabox_images': result = previewCloud.instaboxImages(); break;
+    case 'cloud_instabox_set_image': result = previewCloud.setInstaboxImage(args.image); break;
     case 'cloud_machines': result = previewCloud.list(); break;
     case 'cloud_create': result = previewCloud.create(args.provider, args.name); break;
     case 'cloud_power': result = previewCloud.power(args.id, args.action); break;
