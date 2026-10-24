@@ -1337,7 +1337,7 @@ pub fn read_document_bytes(root: &Path, path: &str) -> Result<Vec<u8>, String> {
         matches!(extension.as_deref(), Some("pdf" | "docx" | "xlsx" | "xlsm" | "xls" | "ods" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "ico" | "svg"))
     };
     let inside = fs::canonicalize(root).ok().and_then(|base| resolved.strip_prefix(base).ok().map(Path::to_path_buf));
-    let in_git = inside.map_or(true, |relative| relative.components().any(|part| part.as_os_str() == ".git"));
+    let in_git = inside.is_none_or(|relative| relative.components().any(|part| part.as_os_str() == ".git"));
     if !document(&target) || !document(&resolved) || in_git {
         return Err("Only PDF, Word (.docx), spreadsheet and image files can be shown".into());
     }
