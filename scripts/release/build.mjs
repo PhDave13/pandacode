@@ -99,6 +99,10 @@ function verifyAdhocSignature(app) {
   if (result.status !== 0 || !/^Signature=adhoc\r?$/m.test(details) || /^Authority=/m.test(details)) throw new Error('Expected an ad-hoc macOS signature.');
 }
 
+const STAPLE_RETRIES = 2;
+const STAPLE_WAIT = 60_000;
+const stapled = app => spawnSync('xcrun', ['stapler', 'validate', app], { stdio: 'ignore' }).status === 0;
+
 async function verifyMacApp(app, mode) {
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
   if (mode === 'adhoc') return verifyAdhocSignature(app);
@@ -137,6 +141,15 @@ async function main() {
   const tauriCli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
   await run(process.execPath, [tauriCli, ...build.args], { env: build.env });
   const bundleRoot = resolve(root, 'src-tauri/target', config.triple, 'release/bundle');
+  // Tauri staples right after Apple accepts, but the ticket can take minutes to be
+  // published, leaving the app (and the DMG and update file made from it) unstapled.
+  // Building again re-notarizes the same code quickly and repackages a stapled app.
+  for (let attempt = 1; build.signing.mode === 'developer-id' && !stapled(resolve(bundleRoot, 'macos/PandaCode.app')); attempt++) {
+    if (attempt > STAPLE_RETRIES) throw new Error('Apple accepted the app but its notarization ticket could not be stapled.');
+    console.log(`No notarization ticket stapled yet; building again in ${STAPLE_WAIT / 1000} s (${attempt}/${STAPLE_RETRIES}).`);
+    await new Promise(done => setTimeout(done, STAPLE_WAIT));
+    await run(process.execPath, [tauriCli, ...build.args], { env: build.env });
+  }
   const bundleDir = resolve(bundleRoot, config.bundleDir);
   const source = resolve(bundleDir, builtArtifact(await readdir(bundleDir), releaseVersion, releaseTarget));
   if (releaseTarget.startsWith('darwin-')) {

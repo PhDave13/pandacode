@@ -86,8 +86,8 @@ records today's date in `website/src/data/release-dates.json` (the website's
 are rejected.
 
 Write `releases/X.Y.Z.md` with the user-facing changes and known limitations.
-The release workflow appends an "Installing" section with the unsigned-build
-instructions, so do not repeat those.
+The release workflow appends an "Installing" section (with the first-launch steps for
+unsigned builds when the macOS certificate is not configured), so do not repeat those.
 
 ## 2. Check
 

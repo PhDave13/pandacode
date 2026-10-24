@@ -117,6 +117,8 @@ jobs:
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       GH_TOKEN: ${{ github.token }}
+      # Same switch as the build job: with a Developer ID certificate the macOS builds are notarized.
+      MAC_SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -129,13 +131,18 @@ jobs:
           {
             cat "releases/$VERSION.md"
             printf '\n\n## Installing\n\n'
-            printf -- '- **macOS (Apple silicon):** open `PandaCode-macOS-arm64.dmg` and drag PandaCode to Applications. If macOS says it cannot verify the app, open System Settings > Privacy & Security and choose **Open Anyway**.\n'
-            printf -- '- **macOS (Intel):** open `PandaCode-macOS-x64.dmg` and drag PandaCode to Applications (same **Open Anyway** step if macOS cannot verify the app).\n'
+            if [ "$MAC_SIGNED" = true ]; then
+              printf -- '- **macOS (Apple silicon):** open `PandaCode-macOS-arm64.dmg` and drag PandaCode to Applications. The app is signed and notarized by Apple.\n'
+              printf -- '- **macOS (Intel):** open `PandaCode-macOS-x64.dmg` and drag PandaCode to Applications.\n'
+            else
+              printf -- '- **macOS (Apple silicon):** open `PandaCode-macOS-arm64.dmg` and drag PandaCode to Applications. If macOS says it cannot verify the app, open System Settings > Privacy & Security and choose **Open Anyway**.\n'
+              printf -- '- **macOS (Intel):** open `PandaCode-macOS-x64.dmg` and drag PandaCode to Applications (same **Open Anyway** step if macOS cannot verify the app).\n'
+            fi
             printf -- '- **Windows x64:** run `PandaCode-Windows-x64-setup.exe`. If SmartScreen warns about an unknown publisher, choose **More info > Run anyway**.\n'
             printf -- '- **Windows arm64:** run `PandaCode-Windows-arm64-setup.exe` (same SmartScreen step).\n'
             printf -- '- **Linux x64:** `chmod +x PandaCode-Linux-x86_64.AppImage` and run it.\n'
             printf -- '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.\n'
-            printf -- '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build (macOS: signed locally automatically).\n\n'
+            printf -- '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build.\n\n'
             printf 'Each file has a `.sha256` checksum beside it. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.\n'
           } > "$RUNNER_TEMP/notes.md"
       - name: Write the updater manifest
