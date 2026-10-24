@@ -57,18 +57,21 @@ test.describe('browser workspace', () => {
     await expect(page.locator('#inspector')).toBeVisible();
   });
 
-  test('file previews open HTML and SVG in the browser with a separate source action', async ({ page }) => {
+  test('HTML previews in the browser with a separate source action, and images open in a tab that can preview them', async ({ page }) => {
     await page.getByRole('button', { name: 'Files', exact: true }).click();
     await page.getByRole('button', { name: 'View source of index.html', exact: true }).click();
-    await expect(page.locator('.file-preview-title')).toHaveText('index.html');
+    await expect(page.locator('.file-view-path')).toHaveText('index.html');
     await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect(browserUrl(page)).toHaveValue(/\/index\.html$/);
     await expect.poll(async () => (await commandCalls(page, 'prepare_file_preview')).at(-1)?.args).toMatchObject({ projectId: 'project-1', sessionId: 'session-1', path: 'index.html' });
     await page.getByRole('button', { name: 'Files', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'public', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'favicon.svg', exact: true }).click();
-    await expect(browserUrl(page)).toHaveValue(/\/public\/favicon\.svg$/);
+    await expect(page.locator('.file-view-path')).toHaveText('public/favicon.svg');
+    await expect(page.locator('.office-viewer[data-kind="image"] img')).toBeVisible();
     expect((await commandCalls(page, 'read_file')).some(call => call.args.path === 'public/favicon.svg')).toBe(false);
+    await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
+    await expect(browserUrl(page)).toHaveValue(/\/public\/favicon\.svg$/);
   });
 
   test('file preview errors keep the file list usable', async ({ page }) => {
@@ -87,12 +90,12 @@ test.describe('browser workspace', () => {
     await response.getByRole('button', { name: 'the page', exact: true }).click();
     await expect(browserUrl(page)).toHaveValue(/\/index\.html$/);
     await response.getByRole('button', { name: 'src/main.ts', exact: true }).click();
-    await expect(page.locator('.file-preview-title')).toHaveText('src/main.ts');
+    await expect(page.locator('.file-view-path')).toHaveText('src/main.ts');
     await expect(response.getByRole('button', { name: 'missing.html', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: 'Board view', exact: true }).click();
     await page.locator('.board-card').filter({ hasText: 'Make search feel instant' }).click();
     await page.locator('.message-content').getByRole('button', { name: 'public/favicon.svg', exact: true }).click();
-    await expect(browserUrl(page)).toHaveValue(/\/public\/favicon\.svg$/);
+    await expect(page.locator('.file-view-path')).toHaveText('public/favicon.svg');
     expect((await commandCalls(page, 'prepare_file_preview')).every(call => call.args.sessionId === 'session-1' && call.args.projectId === 'project-1')).toBe(true);
   });
 

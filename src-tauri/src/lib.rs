@@ -2894,11 +2894,34 @@ async fn read_file(
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::read_file(&root, path)).await
 }
+/// A PDF, Word, spreadsheet or image file for the file viewer, sent as raw bytes rather than JSON.
 #[tauri::command]
-async fn workspace_image(state: State<'_, AppState>, session_id: String, path: String) -> Result<String> {
+async fn read_document_file(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+    path: String,
+) -> Result<tauri::ipc::Response> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::read_document_bytes(&root, &path)).await.map(tauri::ipc::Response::new)
+}
+#[tauri::command]
+async fn workspace_image(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+    session_id: Option<String>,
+    path: String,
+) -> Result<String> {
     // A question belongs to one task: its images come from that task's checkout only.
-    let project_id = state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.project_id;
-    let root = state.root(&project_id, Some(&session_id))?;
+    // The file viewer passes the same project and task it read the document with.
+    let project_id = match project_id {
+        Some(id) => id,
+        None => {
+            let session_id = session_id.as_deref().ok_or_else(|| "A task is required to show images".to_string())?;
+            state.store.lock().map_err(|e| e.to_string())?.session(session_id)?.project_id
+        }
+    };
+    let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::image_data_url(&root, &path)).await
 }
 #[tauri::command]
@@ -3510,6 +3533,7 @@ pub fn run() {
                 search_files,
                 search_text,
                 read_file,
+                read_document_file,
                 design::design_list,
                 design::design_read,
                 design::design_comments,

@@ -17,6 +17,7 @@ html[data-theme=dark] .doc-view-switch>.segment-thumb{background:color-mix(in sr
 .doc-reader.markdown li{padding-bottom:2px}
 .doc-reader.markdown blockquote{margin:0 0 16px}
 .doc-reader.markdown table{display:block;overflow-x:auto}
+.doc-reader.markdown img{max-width:100%;height:auto;vertical-align:middle;border-radius:6px}
 .doc-plain p{margin:0 0 14px;white-space:pre-wrap}
 .doc-raw{margin:0;padding:9px 15px 20px;overflow:auto;font-family:var(--mono);font-size:.78rem;line-height:1.7;white-space:pre;tab-size:4}
 .document-viewer[data-wrap] .doc-raw{white-space:pre-wrap;overflow-wrap:anywhere}

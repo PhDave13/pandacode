@@ -324,9 +324,10 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 .file-list{padding:4px 9px}
 .file-row{display:flex;align-items:center;border-radius:2px}
 .file-row:hover{background:var(--raised)}
-.file-row>button:first-child{flex:1;min-width:0;justify-content:flex-start;padding:9px 10px;color:var(--text);font-size:.83rem;gap:9px}
+.file-row>button:first-child{flex:1;min-width:0;justify-content:flex-start;padding:5px 8px 5px calc(4px + var(--depth, 0) * 14px);color:var(--text);font-size:.83rem;gap:6px}
 .file-row>button:first-child>.icon{width:14px;height:14px;color:var(--muted)}
-.file-row>button:first-child>.icon:last-child:not(:first-child){width:11px;height:11px;margin-left:auto}
+.file-row>button:first-child>.file-twisty{flex:none;width:12px;height:12px}
+.file-row [aria-expanded="true"]>.file-twisty{rotate:90deg}
 .file-row>button:first-child>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-attach{width:23px;height:23px;opacity:0;margin-right:5px}
 .file-attach .icon{width:12px;height:12px}
