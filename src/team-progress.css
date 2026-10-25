@@ -1,6 +1,6 @@
 /* Spawned workers: quiet inline lines in the thread, like tool lines. A line opens its worker
    in the Architect & workers panel; any beyond the first six are one more line away. */
-.team-progress{display:grid;justify-items:start;gap:0;margin:2px 0 12px}
+.team-progress{display:grid;grid-template-columns:minmax(0,1fr);justify-items:start;gap:0;margin:2px 0 12px}
 /* Just a line of text, like "Worked for…": as wide as its words, brighter on hover. */
 .team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:7px;width:fit-content;max-width:100%;min-width:0;min-height:30px;padding:2px 0;border-radius:2px;background:none;text-align:left;color:var(--muted)}
 .team-progress-worker{font-size:.8rem;line-height:1.5}

@@ -440,6 +440,24 @@ test.describe('architect teams', () => {
     expect(await transcript(page).locator('.team-progress-worker[data-worker-id="review"]').evaluate((row, tool) => Boolean(row.compareDocumentPosition(tool!) & Node.DOCUMENT_POSITION_FOLLOWING), await later.elementHandle())).toBe(true);
   });
 
+  test('a long worker line never makes a narrow thread scroll sideways', async ({ page }) => {
+    await page.setViewportSize({ width: 700, height: 800 });
+    const long = worker('build', { status: 'completed', name: 'Attachment chips in sent messages plus drop paths for anything that cannot be attached '.repeat(3) });
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [long] }) }, { 'session-2': [
+      { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 2000 },
+    ] as Message[] });
+    const row = transcript(page).locator('.team-progress-worker[data-worker-id="build"]');
+    await expect(row).toBeVisible();
+    const fit = await transcript(page).evaluate(root => {
+      const line = root.querySelector('.team-progress-worker')!.getBoundingClientRect();
+      const box = root.getBoundingClientRect();
+      return { scrolls: root.scrollWidth > root.clientWidth, inside: line.right <= box.right };
+    });
+    expect(fit).toEqual({ scrolls: false, inside: true });
+  });
+
+
+
   for (const view of ['conversation', 'board'] as const) {
     test(`renders internal coordination as neutral Team status and preserves real user JSON in ${view}`, async ({ page }) => {
       await installArchitect(page, { 'session-2': team('session-2') }, { 'session-2': coordinationHistory('session-2') });
