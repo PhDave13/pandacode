@@ -197,7 +197,10 @@ Codex receives the team's dynamic tool catalog on thread creation. Other support
 harnesses receive their role's catalog through a temporary, native loopback MCP
 endpoint, using Claude's MCP configuration or ACP HTTP MCP negotiation. The endpoint is authenticated per run, bound to literal loopback,
 rejects browser origins, bounds requests and results, and closes with its provider
-run. It adds no Node/Python server, permanent configuration file, or resident
+run. Its token never appears on a command line, which any process can list:
+Claude-family harnesses read it from their own `PANDACODE_TOOLS_TOKEN` variable
+(the `--mcp-config` header is `Bearer ${PANDACODE_TOOLS_TOKEN}`, which Claude Code
+expands), Pi from its bridge variable, and Codex and ACP harnesses over stdin. It adds no Node/Python server, permanent configuration file, or resident
 service. ACP harnesses must advertise HTTP MCP support. Existing user integrations remain
 configured; this bridge does not grant access to PandaCode's broader app tools.
 Team tools (dispatch, list, read, follow up, cancel, finish, directory,

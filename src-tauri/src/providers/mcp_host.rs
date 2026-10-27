@@ -13,6 +13,9 @@ const HEADER_LIMIT: usize = 8192;
 const BODY_LIMIT: usize = 160 * 1024;
 const RESULT_LIMIT: usize = 128 * 1024;
 const SERVER_NAME: &str = "pandacode_architect";
+/// Claude Code reads the tools token from this variable of its own process (`${…}` in
+/// `--mcp-config`), so the token never appears in argv, which any process can list.
+pub(super) const TOKEN_ENV: &str = "PANDACODE_TOOLS_TOKEN";
 
 pub(super) struct Server {
     authority: String,
@@ -122,8 +125,12 @@ impl Server {
             context: server_context,
         })
     }
+    /// Point a Claude-family process at this server. Only the variable's name is in argv.
+    pub(super) fn configure_claude(&self, command: &mut Command) {
+        command.arg("--mcp-config").arg(self.claude_config().to_string()).env(TOKEN_ENV, &self.token);
+    }
     pub(super) fn claude_config(&self) -> Value {
-        json!({"mcpServers":{SERVER_NAME:{"type":"http","url":format!("http://{}/mcp",self.authority),"headers":{"Authorization":format!("Bearer {}",self.token)}}}})
+        json!({"mcpServers":{SERVER_NAME:{"type":"http","url":format!("http://{}/mcp",self.authority),"headers":{"Authorization":format!("Bearer ${{{TOKEN_ENV}}}")}}}})
     }
     pub(super) fn pi_config(&self) -> Value {
         json!({"url":format!("http://{}/mcp",self.authority),"authorization":format!("Bearer {}",self.token)})
@@ -1098,7 +1105,7 @@ mod protocol_tests {
     async fn claude_and_kimi_fixture_processes_invoke_the_authenticated_native_bridge() {
         let _lock = concurrent_process_tests::process_test_lock().lock().await;
         const FIXTURE: &str = r#"
-import sys,json,urllib.request
+import os,sys,json,urllib.request
 provider=sys.argv[1]
 def receive():
     return json.loads(sys.stdin.readline())
@@ -1108,7 +1115,9 @@ receive()
 if provider == 'claude':
     assert '--strict-mcp-config' not in sys.argv
     server=json.loads(sys.argv[sys.argv.index('--mcp-config')+1])['mcpServers']['pandacode_architect']
-    headers=server['headers']
+    # Claude Code expands the reference from its own environment.
+    assert server['headers']=={'Authorization':'Bearer ${PANDACODE_TOOLS_TOKEN}'}
+    headers={'Authorization':'Bearer '+os.environ['PANDACODE_TOOLS_TOKEN']}
     emit({'type':'control_response','response':{'request_id':'pandacode-init','subtype':'success','response':{}}})
     receive()
 else:
@@ -1179,5 +1188,57 @@ else:
                 "native and MCP tool events must not duplicate"
             );
         }
+    }
+
+    /// Any process can list command lines (`ps -A -ww -o args=`), so a local Claude turn
+    /// carries the tools token only in its environment.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_local_claude_turn_keeps_the_tools_token_out_of_every_process_listing() {
+        let _lock = concurrent_process_tests::process_test_lock().lock().await;
+        const FIXTURE: &str = r#"
+import os,sys,json,urllib.request
+def receive():
+    return json.loads(sys.stdin.readline())
+def emit(value):
+    print(json.dumps(value),flush=True)
+receive()
+server=json.loads(sys.argv[sys.argv.index('--mcp-config')+1])['mcpServers']['pandacode_architect']
+token=os.environ['PANDACODE_TOOLS_TOKEN']
+assert len(token)>=64
+emit({'type':'control_response','response':{'request_id':'pandacode-init','subtype':'success','response':{}}})
+receive()
+headers={'Authorization':server['headers']['Authorization'].replace('${PANDACODE_TOOLS_TOKEN}',token),'Content-Type':'application/json','Accept':'application/json, text/event-stream'}
+for request in [
+    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18'}},
+    {'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'pandacode_delegate','arguments':{}}}
+]:
+    req=urllib.request.Request(server['url'],data=json.dumps(request).encode(),headers=headers)
+    with urllib.request.urlopen(req,timeout=5) as response:
+        result=json.load(response)
+listing=json.loads(result['result']['content'][0]['text'])['listing']
+assert '--mcp-config' in listing and '${PANDACODE_TOOLS_TOKEN}' in listing, 'the listing must include this agent'
+assert token not in listing, 'the tools token is visible in a process listing'
+emit({'type':'result','subtype':'success','result':'clean'})
+"#;
+        let host = ToolHost {
+            tools: vec![json!({"type":"function","name":"pandacode_delegate","description":"delegate","inputSchema":{"type":"object"}})],
+            approval_tools: HashSet::new(),
+            // Runs while the agent waits on the tool host, with its process alive.
+            handler: Arc::new(|_, _| Box::pin(async {
+                let listing = Command::new("ps").args(["-A", "-ww", "-o", "args="]).output().await.map_err(|e| e.to_string())?;
+                Ok(json!({"listing": String::from_utf8_lossy(&listing.stdout)}))
+            })),
+        };
+        let (_sender, input) = tokio::sync::mpsc::unbounded_channel();
+        let mut command = Command::new("/usr/bin/python3");
+        command.args(["-c", FIXTURE]);
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            run_process_with_tools(super::super::tests::config("claude"), Arc::new(|_| {}), input, command, vec![], Some(host)),
+        )
+        .await
+        .unwrap()
+        .expect("the fixture's assertions hold");
     }
 }

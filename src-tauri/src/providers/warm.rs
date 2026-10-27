@@ -138,7 +138,7 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
         };
         let sink: Sink = Arc::new(|_| {});
         let server = mcp_host::Server::start_with_approvals(placeholder, config.session_id.clone(), sink, &config.mode).await?;
-        command.args(["--mcp-config", &server.claude_config().to_string()]);
+        server.configure_claude(&mut command);
         Some(server)
     };
     command

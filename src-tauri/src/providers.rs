@@ -2990,7 +2990,7 @@ async fn run_process_with_tools(
     } else {
         if matches!(config.provider.as_str(), "claude" | "glm" | "mimo") {
             if let Some(server) = &mcp {
-                command.args(["--mcp-config", &server.claude_config().to_string()]);
+                server.configure_claude(&mut command);
             }
         }
         command
